@@ -60,11 +60,12 @@ S() { local who=$1; shift; ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChe
 fail() { echo "FAIL: $*"; exit 1; }
 
 echo "== TOTP sudo (alice)"
-out=$(S eg_alice "echo $(code eg_alice) | sudo -S -p '' id -un" 2>&1) || true
+c1=$(code eg_alice) # one code for both uses: a 30 s step can end between the two calls
+out=$(S eg_alice "echo $c1 | sudo -S -p '' id -un" 2>&1) || true
 [ "$out" = root ] && echo "right code: sudo ran as root" || fail "sudo with right code: $out"
 S eg_alice "echo 000000 | sudo -S -p '' true" >/dev/null 2>&1 && fail "sudo accepted a wrong code"
 echo "wrong code: sudo refused"
-S eg_alice "echo $(code eg_alice) | sudo -S -p '' true" >/dev/null 2>&1 && fail "sudo accepted a reused code"
+S eg_alice "echo $c1 | sudo -S -p '' true" >/dev/null 2>&1 && fail "sudo accepted a reused code"
 echo "reused code: sudo refused"
 
 echo "== recorded interactive session (alice)"
