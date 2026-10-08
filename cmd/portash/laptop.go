@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -130,7 +131,7 @@ func (p *profile) options() dial.Options {
 
 func cmdLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
-	gw := fs.String("gateway", "", "gateway host[:port] (default: NAME, port 443)")
+	gw := fs.String("gateway", "", "gateway host[:port] (default: NAME, port 443), or https://HOST behind Cloudflare Tunnel or a reverse proxy")
 	pins := fs.String("pin", "", "gateway key pin(s) from `portash fingerprint`, comma-separated (omit only for a CA-signed --cert)")
 	network := fs.String("network", "", "VPN CIDR (only for a gateway into a Vabbit VPN)")
 	pos, err := parse(fs, args)
@@ -153,7 +154,12 @@ func cmdLogin(args []string) error {
 		}
 		addr = name
 	}
-	if _, _, err := net.SplitHostPort(addr); err != nil {
+	if strings.HasPrefix(addr, "https://") {
+		// Behind Cloudflare Tunnel or a reverse proxy.
+		if u, err := url.Parse(addr); err != nil || u.Hostname() == "" {
+			return errors.New("--gateway must look like https://host or https://host/path")
+		}
+	} else if _, _, err := net.SplitHostPort(addr); err != nil {
 		addr = net.JoinHostPort(addr, "443")
 	}
 	var pinList []string

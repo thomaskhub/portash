@@ -133,14 +133,26 @@ The limit of any allowlist is the programs on it: anything that can spawn a
 process (editors, pagers, interpreters, `docker run`, `sudo`) turns it back
 into a shell. That's documented, not enforced.
 
-## Why HTTP Upgrade on 443 (not raw TLS, not WebSocket)
+## Why HTTP Upgrade on 443, and WebSocket only behind a tunnel
 
 The client sends `GET /v1/tcp?target=100.92.0.7:22` with `Upgrade: portash` over
 TLS; the gateway answers `101 Switching Protocols` and both sides switch to a
-raw byte stream. This looks like normal HTTPS to middleboxes, can run behind an
-ordinary HTTPS reverse proxy that supports upgrades, and needs only the Go
-standard library. The client also honours `HTTPS_PROXY` (HTTP CONNECT) for
-networks that force a proxy.
+raw byte stream. This looks like normal HTTPS to middleboxes and needs only
+the Go standard library. The client also honours `HTTPS_PROXY` (HTTP CONNECT)
+for networks that force a proxy.
+
+The gateway's TLS must end at the gateway: laptops pin its key, and the device
+signature covers that TLS session's exported keying material. A proxy that
+terminates HTTPS (Cloudflare Tunnel, Caddy, Traefik) breaks both, so for those
+the gateway has a second, plain-HTTP listener (`--tunnel-listen`) that accepts
+a WebSocket at `/v1/tunnel`. The laptop (`--gateway https://host`) speaks
+ordinary HTTPS to the proxy, checked against the system CAs, opens the
+WebSocket, and runs the usual pinned TLS 1.3 handshake inside it. The proxy
+carries ciphertext only; pinning, device binding, unlock and resume are
+unchanged. WebSocket rather than the `portash` upgrade because Cloudflare only
+forwards WebSocket upgrades. The client address comes from a header the proxy
+sets (`--tunnel-ip-header`), so the listener must only be reachable by the
+proxy (keep it on 127.0.0.1).
 
 ## Daily unlock (TOTP once, then no prompts)
 

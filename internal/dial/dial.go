@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -22,10 +23,11 @@ import (
 	"portash/internal/gateway"
 	"portash/internal/pin"
 	"portash/internal/resume"
+	"portash/internal/wsconn"
 )
 
 type Options struct {
-	Gateway       string             // host:port of the gateway
+	Gateway       string             // host:port of the gateway, or https://host[/path] behind a tunnel
 	Pins          []string           // sha256:... of accepted gateway keys; empty = verify with system CAs
 	Token         string             // psh_...
 	Device        ed25519.PrivateKey // signs each gateway request
@@ -37,6 +39,9 @@ type Options struct {
 	Resume       bool
 	ResumeWindow time.Duration
 	Ticket       string // from Unlock, when the gateway requires one
+	// TunnelCAs verifies the HTTPS of a tunnel or reverse proxy; nil uses the
+	// system CAs.
+	TunnelCAs *x509.CertPool
 }
 
 // ErrUnlockRequired means the gateway wants a fresh ticket.
@@ -177,14 +182,19 @@ func viaVPN(network netip.Prefix, target string) bool {
 // handshake opens a TLS connection to the gateway, checks its pin, and
 // returns the exported keying material the device key signs.
 func handshake(ctx context.Context, o Options) (*tls.Conn, []byte, error) {
-	host, _, err := net.SplitHostPort(o.Gateway)
+	host, _, err := net.SplitHostPort(o.hostPort())
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(o.Device) != ed25519.PrivateKeySize {
 		return nil, nil, errors.New("no device key (portash device)")
 	}
-	raw, err := dialTCP(ctx, o.Gateway)
+	var raw net.Conn
+	if strings.HasPrefix(o.Gateway, "https://") {
+		raw, err = dialTunnel(ctx, o.Gateway, o.TunnelCAs)
+	} else {
+		raw, err = dialTCP(ctx, o.Gateway)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -219,7 +229,7 @@ func GatewayStream(ctx context.Context, o Options, target, resumeReq string) (ne
 	}
 	sig := ed25519.Sign(o.Device, gateway.SignedMessage(ekm, target))
 	req := "GET " + gateway.Path + "?target=" + url.QueryEscape(target) + " HTTP/1.1\r\n" +
-		"Host: " + o.Gateway + "\r\n" +
+		"Host: " + o.hostPort() + "\r\n" +
 		"Authorization: Bearer " + o.Token + "\r\n" +
 		gateway.SigHeader + ": " + base64.RawURLEncoding.EncodeToString(sig) + "\r\n" +
 		"Connection: Upgrade\r\nUpgrade: " + gateway.UpgradeProto + "\r\n"
@@ -351,7 +361,7 @@ func Unlock(ctx context.Context, o Options, code string) (string, time.Time, err
 	defer tc.Close()
 	sig := ed25519.Sign(o.Device, gateway.SignedMessage(ekm, gateway.UnlockTarget))
 	req := "POST " + gateway.UnlockPath + " HTTP/1.1\r\n" +
-		"Host: " + o.Gateway + "\r\n" +
+		"Host: " + o.hostPort() + "\r\n" +
 		"Authorization: Bearer " + o.Token + "\r\n" +
 		gateway.SigHeader + ": " + base64.RawURLEncoding.EncodeToString(sig) + "\r\n" +
 		gateway.TOTPHeader + ": " + code + "\r\n" +
@@ -380,4 +390,52 @@ func Unlock(ctx context.Context, o Options, code string) (string, time.Time, err
 		return "", time.Time{}, err
 	}
 	return lines[0], exp, nil
+}
+
+// hostPort is the gateway's host:port, also for a tunnel URL.
+func (o *Options) hostPort() string {
+	u, err := url.Parse(o.Gateway)
+	if err != nil || u.Scheme != "https" {
+		return o.Gateway
+	}
+	if u.Port() == "" {
+		return net.JoinHostPort(u.Hostname(), "443")
+	}
+	return u.Host
+}
+
+// dialTunnel reaches a gateway behind Cloudflare Tunnel or a reverse proxy:
+// ordinary HTTPS to the proxy (checked against the system CAs), then a
+// WebSocket to the gateway. The caller runs the pinned TLS handshake inside
+// it, so the proxy can't read or alter the stream.
+func dialTunnel(ctx context.Context, gw string, roots *x509.CertPool) (net.Conn, error) {
+	u, err := url.Parse(gw)
+	if err != nil {
+		return nil, err
+	}
+	path := u.EscapedPath()
+	if path == "" || path == "/" {
+		path = gateway.TunnelPath
+	}
+	addr := u.Host
+	if u.Port() == "" {
+		addr = net.JoinHostPort(u.Hostname(), "443")
+	}
+	raw, err := dialTCP(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	tc := tls.Client(raw, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname(), RootCAs: roots, NextProtos: []string{"http/1.1"}})
+	tc.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tc.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	ws, err := wsconn.Client(tc, u.Host, path)
+	if err != nil {
+		tc.Close()
+		return nil, err
+	}
+	tc.SetDeadline(time.Time{})
+	return ws, nil
 }

@@ -117,7 +117,54 @@ cp packaging/portash-gateway.service /etc/systemd/system/
 systemctl enable --now portash-gateway
 ```
 
-**6. Open TCP 443 and close 22** in the cloud firewall.
+**6. Open TCP 443 and close 22** in the cloud firewall. Or, with no open port
+and no public IP at all, use a Cloudflare Tunnel (next section).
+
+### Optional: Cloudflare Tunnel or a reverse proxy
+
+Use this when the VM has no public IP, port 443 is already taken by a web
+server, or you don't want to handle certificates and DNS. The gateway then
+also listens on plain HTTP on localhost, and the tunnel or proxy forwards a
+WebSocket to it. portash still runs its own pinned TLS inside, so Cloudflare
+or the proxy only ever sees encrypted bytes, and a token still only works from
+its own laptop.
+
+Change the gateway's `ExecStart` in `/etc/systemd/system/portash-gateway.service`:
+
+```sh
+ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --dir /var/lib/portash --require-unlock \
+    --listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
+```
+
+(`--listen ""` turns the direct port off; keep `--listen :443` to have both.)
+
+**Cloudflare Tunnel.** In the Cloudflare dashboard, create a tunnel, install
+`cloudflared` on the VM with the command it shows, and add a public hostname,
+e.g. `vm1.example.com`, with service `http://127.0.0.1:8080`. Cloudflare
+creates the DNS record and the certificate. Nothing on the VM needs to accept
+inbound connections.
+
+**Caddy, Traefik or nginx** already on port 443: route a hostname to
+`127.0.0.1:8080` like any other site; WebSockets must be allowed (they are by
+default in Caddy and Traefik). Use `--tunnel-ip-header X-Real-IP` or
+`X-Forwarded-For` to match what your proxy sends.
+
+```
+# Caddyfile
+vm1.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Laptops then log in with the URL instead of a host name; everything else stays
+the same:
+
+```sh
+portash login vm1.example.com --gateway https://vm1.example.com --pin sha256:...
+```
+
+Keep the tunnel port on `127.0.0.1`: the IP header is trusted, so anyone who
+could reach that port directly could fake their address.
 
 ### On each laptop (Linux or Windows; macOS builds but is untested)
 

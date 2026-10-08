@@ -12,8 +12,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -37,6 +39,7 @@ const usage = `portash - a door to your shells: SSH over TLS on port 443
 
 Gateway (on each VM, or one host in front of a Vabbit VPN):
   portash gateway --network CIDR [--listen :443] [--ports 22] [--dir /var/lib/portash]
+          [--tunnel-listen 127.0.0.1:8080 [--tunnel-ip-header CF-Connecting-IP]]
           [--cert FILE --key FILE] [--max-streams 16] [--max-conns 512]
           [--idle-timeout 10m] [--max-session 24h] [--resume-window 10m]
           [--require-unlock] [--ticket-ttl 12h]
@@ -66,7 +69,7 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
 Laptop:
   portash device
           print this laptop's device key (send it to the admin)
-  portash login [NAME] [--gateway HOST:443] --pin sha256:...[,...] [--network CIDR]
+  portash login [NAME] [--gateway HOST:443|https://HOST] --pin sha256:...[,...] [--network CIDR]
           add a gateway (one per VM; NAME defaults to the host); the token
           is read from stdin or a prompt
   portash logout [NAME...]
@@ -154,7 +157,9 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 
 func cmdGateway(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
-	listen := fs.String("listen", ":443", "address to listen on")
+	listen := fs.String("listen", ":443", "address for direct TLS connections (\"\" = none)")
+	tunnelListen := fs.String("tunnel-listen", "", "plain-HTTP address for Cloudflare Tunnel or a reverse proxy (e.g. 127.0.0.1:8080)")
+	tunnelIP := fs.String("tunnel-ip-header", "", "header carrying the client's IP from the tunnel (CF-Connecting-IP, X-Real-IP)")
 	network := fs.String("network", "", "VPN CIDR targets must be in (e.g. 100.92.0.0/16)")
 	ports := fs.String("ports", "22", "comma-separated target ports allowed")
 	dir := fs.String("dir", "/var/lib/portash", "state directory (tokens, TLS key)")
@@ -208,21 +213,46 @@ func cmdGateway(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	srv := g.Server(*listen, cert)
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
-		return err
+	if *listen == "" && *tunnelListen == "" {
+		return errors.New("nothing to listen on: set --listen and/or --tunnel-listen")
 	}
-	logger.Printf("portash gateway %s on %s, network %s, ports %s, pin %s", version, *listen, prefix, *ports, pin.Of(leaf))
-	errc := make(chan error, 1)
-	go func() { errc <- srv.ServeTLS(g.Listener(ln), "", "") }()
+	logger.Printf("portash gateway %s, network %s, ports %s, pin %s", version, prefix, *ports, pin.Of(leaf))
+	var servers []*http.Server
+	errc := make(chan error, 3)
+	if *listen != "" {
+		ln, err := net.Listen("tcp", *listen)
+		if err != nil {
+			return err
+		}
+		srv := g.Server(*listen, cert)
+		servers = append(servers, srv)
+		logger.Printf("direct TLS on %s", *listen)
+		go func() { errc <- srv.ServeTLS(g.Listener(ln), "", "") }()
+	}
+	if *tunnelListen != "" {
+		ln, err := net.Listen("tcp", *tunnelListen)
+		if err != nil {
+			return err
+		}
+		tl := gateway.NewTunnelListener(*tunnelIP)
+		front := &http.Server{Handler: tl, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 8 << 10,
+			ErrorLog: log.New(io.Discard, "", 0)}
+		inner := g.Server("", cert)
+		servers = append(servers, front, inner)
+		logger.Printf("tunnel (WebSocket at %s) on %s", gateway.TunnelPath, *tunnelListen)
+		go func() { errc <- front.Serve(g.Listener(ln)) }()
+		go func() { errc <- inner.ServeTLS(g.Listener(tl), "", "") }()
+	}
 	select {
 	case err := <-errc:
 		return err
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return srv.Shutdown(sctx)
+		for _, s := range servers {
+			s.Shutdown(sctx)
+		}
+		return nil
 	}
 }
 

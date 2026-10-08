@@ -5,13 +5,17 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base32"
 	"errors"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +38,7 @@ type env struct {
 	token   string
 	tokPath string
 	echo    string // echo server address, inside the allowed network
+	cert    tls.Certificate
 }
 
 func setup(t *testing.T) env { return setupWith(t, nil) }
@@ -93,7 +98,7 @@ func setupWith(t *testing.T, tweak func(*gateway.Config)) env {
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	leaf, _ := pin.Leaf(cert)
-	return env{g: g, device: device, gwAddr: srv.Listener.Addr().String(), pin: pin.Of(leaf), token: tok, tokPath: tokPath, echo: ln.Addr().String()}
+	return env{g: g, device: device, gwAddr: srv.Listener.Addr().String(), pin: pin.Of(leaf), token: tok, tokPath: tokPath, echo: ln.Addr().String(), cert: cert}
 }
 
 func (e env) opts() dial.Options {
@@ -543,4 +548,83 @@ func TestUnlockEndpointHiddenWhenOff(t *testing.T) {
 	if _, _, err := dial.Unlock(context.Background(), e.opts(), code(t, 0)); err == nil {
 		t.Fatal("unlock succeeded on a gateway without --require-unlock")
 	}
+}
+
+// tunnel puts the gateway behind a reverse proxy that terminates HTTPS, the
+// way Cloudflare Tunnel, Caddy or Traefik would, and returns options that
+// reach it through the proxy.
+func (e env) tunnel(t *testing.T) dial.Options {
+	o, _ := e.tunnelProxy(t)
+	return o
+}
+
+func (e env) tunnelProxy(t *testing.T) (dial.Options, *httptest.Server) {
+	t.Helper()
+	o := e.opts()
+	tl := gateway.NewTunnelListener("X-Real-IP")
+	inner := e.g.Server("", e.cert)
+	go inner.ServeTLS(tl, "", "")
+	t.Cleanup(func() { inner.Close() })
+	plain := httptest.NewServer(tl)
+	t.Cleanup(plain.Close)
+	backend, _ := url.Parse(plain.URL)
+	rp := httputil.NewSingleHostReverseProxy(backend)
+	director := rp.Director
+	rp.Director = func(r *http.Request) { director(r); r.Header.Set("X-Real-IP", "203.0.113.7") }
+	proxy := httptest.NewTLSServer(rp)
+	t.Cleanup(proxy.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(proxy.Certificate())
+	o.Gateway = proxy.URL
+	o.TunnelCAs = pool
+	return o, proxy
+}
+
+func TestStreamThroughTunnel(t *testing.T) {
+	e := setup(t)
+	c, err := dial.Connect(context.Background(), e.tunnel(t), e.echo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	roundTrip(t, c)
+}
+
+func TestTunnelKeepsPinning(t *testing.T) {
+	e := setup(t)
+	o := e.tunnel(t)
+	o.Pins = []string{"sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+	if _, err := dial.Connect(context.Background(), o, e.echo); err == nil {
+		t.Fatal("wrong pin accepted through the tunnel")
+	}
+}
+
+func TestTunnelNeedsTrustedProxyCert(t *testing.T) {
+	e := setup(t)
+	o := e.tunnel(t)
+	o.TunnelCAs = x509.NewCertPool()
+	if _, err := dial.Connect(context.Background(), o, e.echo); err == nil {
+		t.Fatal("untrusted proxy certificate accepted")
+	}
+}
+
+func TestResumeThroughTunnel(t *testing.T) {
+	e := setupWith(t, func(c *gateway.Config) { c.IdleTimeout = time.Minute })
+	o, proxy := e.tunnelProxy(t)
+	o.Resume = true
+	c, err := dial.Connect(context.Background(), o, e.echo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 5)
+	for i := 0; i < 3; i++ {
+		io.WriteString(c, "hello")
+		if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "hello" {
+			t.Fatalf("round %d: %q %v", i, buf, err)
+		}
+		proxy.CloseClientConnections() // the tunnel drops; dial reconnects through it
+	}
+	roundTrip(t, c)
 }
