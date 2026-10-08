@@ -170,6 +170,15 @@ out, the sweep closes its open streams. Because each per-VM gateway checks the
 code itself, the same secret can be imported on every VM: one authenticator
 entry, one code each morning, all VMs unlocked, and still no shared server.
 
+Decision (issue #8): the secret is per person (per token name), never shared
+between people, and the same on all of that person's VMs. Eight authenticator
+entries per person would be unmanageable. The cost: a taken-over VM, or its
+gateway process, exposes that person's secret, so the attacker can compute
+their unlock code for the other VMs. It is not a bypass. Each VM still needs
+that VM's own token, bound to the laptop's device key, plus a normal SSH key.
+Someone who wants isolation per VM can enroll a separate secret on it
+(`portash totp enroll NAME --unlock`) and accept one more code.
+
 This is the gate for automation: ssh, scp, rsync, Ansible and VS Code need
 no prompt during the day, and a stolen laptop is useless without the phone
 once the ticket expires. TOTP sudo stays for people working by hand.
