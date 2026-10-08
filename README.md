@@ -66,7 +66,9 @@ flowchart LR
   may do; `portash authd` checks TOTP codes and writes the audit log and
   recordings as root.
 
-Each VM has its own gateway: one hacked VM doesn't open the others.
+Each VM has its own gateway, token and host key: one hacked VM doesn't open the
+others. The one thing people share between their VMs is their unlock TOTP
+secret (see [Add a person](#add-a-person)).
 
 ## Installation
 
@@ -289,7 +291,11 @@ All of this runs as root on the VM.
 # their device key from `portash device`; prints a psh_ token, shown once
 portash token add alice-laptop --device pshd_... --ttl 2160h --dir /var/lib/portash
 
-# daily unlock: enroll on the first VM, import the same secret on the others
+# daily unlock: enroll on the first VM, import the same secret on the others.
+# One secret per person, the same on all their VMs: one authenticator entry.
+# Trade-off: a VM taken over exposes that person's secret, so the attacker can
+# compute their unlock code for the other VMs (they still need that VM's token
+# and the laptop's device key). Never share one secret between people.
 portash totp enroll alice-laptop --unlock           # prints otpauth://..., give it to Alice once
 echo 'otpauth://...' | portash totp import alice-laptop --unlock     # on every other VM
 
