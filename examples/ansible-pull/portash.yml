@@ -1,0 +1,108 @@
+# portash on a VM that is set up by ansible-pull, with no ssh into it.
+# README, "Provisioning without ssh", explains the layout and how to make the
+# files under portash-secrets/. Run from the VM's user_data:
+#
+#   ansible-pull -U https://git.example.com/infra.git -e vm_name=vm1.example.com \
+#     --vault-id people@/root/people.pass --vault-id vm@/root/vm.pass portash.yml
+#
+- hosts: localhost
+  connection: local
+  become: true
+  vars:
+    secrets: "{{ playbook_dir }}/portash-secrets"
+    vm_dir: "{{ secrets }}/vms/{{ vm_name }}"
+    # Where you publish the Linux build of portash, and its SHA-256.
+    portash_url: https://downloads.example.com/portash/portash-linux-amd64
+    portash_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    cloudflared_version: "2026.10.0"
+    cloudflared_sha256: d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db # amd64
+    ssh_service: ssh # sshd on RHEL-like systems
+
+  tasks:
+    - name: Install portash
+      get_url:
+        url: "{{ portash_url }}"
+        checksum: "sha256:{{ portash_sha256 }}"
+        dest: /usr/local/bin/portash
+        mode: "0755"
+
+    # The gateway's key, the tokens and the unlock secrets, made on an admin
+    # machine before this VM existed (so its pin is already known).
+    - name: portash state folder
+      file: { path: "{{ item }}", state: directory, owner: root, group: root, mode: "0700" }
+      loop: [/var/lib/portash, /var/lib/portash/unlock]
+
+    - name: Gateway key and certificate (one pair per VM)
+      copy: { src: "{{ vm_dir }}/{{ item.f }}", dest: "/var/lib/portash/{{ item.f }}", owner: root, group: root, mode: "{{ item.m }}" }
+      loop:
+        - { f: gateway.key, m: "0600" }
+        - { f: gateway.crt, m: "0644" }
+      notify: restart portash-gateway
+
+    - name: Tokens (shared by every VM; the gateway rereads it by itself)
+      copy: { src: "{{ secrets }}/people/tokens", dest: /var/lib/portash/tokens, owner: root, group: root, mode: "0600" }
+
+    - name: Daily unlock secrets (shared by every VM)
+      copy: { src: "{{ secrets }}/people/unlock/", dest: /var/lib/portash/unlock/, owner: root, group: root, mode: "0600" }
+
+    # sshd: localhost only, keys only, and a host key signed by your host CA,
+    # so laptops never have to accept a host key on first sight.
+    - name: Host key and certificate
+      copy: { src: "{{ vm_dir }}/{{ item.f }}", dest: "/etc/ssh/{{ item.f }}", owner: root, group: root, mode: "{{ item.m }}" }
+      loop:
+        - { f: ssh_host_ed25519_key, m: "0600" }
+        - { f: ssh_host_ed25519_key.pub, m: "0644" }
+        - { f: ssh_host_ed25519_key-cert.pub, m: "0644" }
+      notify: restart ssh
+
+    - name: sshd settings
+      copy:
+        dest: /etc/ssh/sshd_config.d/portash.conf
+        mode: "0644"
+        content: |
+          ListenAddress 127.0.0.1
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
+      notify: restart ssh
+
+    # Copies of packaging/*.service from the portash repository.
+    - name: systemd units
+      copy: { src: "{{ playbook_dir }}/files/{{ item }}", dest: "/etc/systemd/system/{{ item }}", mode: "0644" }
+      loop: [portash-authd.service, portash-gateway.service]
+      tags: [services]
+
+    - name: Start authd and the gateway
+      systemd: { name: "{{ item }}", enabled: true, state: started, daemon_reload: true }
+      loop: [portash-authd, portash-gateway]
+      tags: [services]
+
+    # Cloudflare Tunnel, created in the dashboard (or with Terraform) with the
+    # public hostname vm_name -> http://127.0.0.1:8080. Its token is in
+    # portash-secrets/vms/<vm_name>/tunnel.yml as cloudflare_tunnel_token.
+    - name: Install cloudflared
+      get_url:
+        url: "https://github.com/cloudflare/cloudflared/releases/download/{{ cloudflared_version }}/cloudflared-linux-amd64"
+        checksum: "sha256:{{ cloudflared_sha256 }}"
+        dest: /usr/local/bin/cloudflared
+        mode: "0755"
+
+    - name: Tunnel token
+      include_vars: "{{ vm_dir }}/tunnel.yml"
+      no_log: true
+      tags: [services]
+
+    - name: Connect the tunnel
+      command: /usr/local/bin/cloudflared service install {{ cloudflare_tunnel_token }}
+      args: { creates: /etc/systemd/system/cloudflared.service }
+      no_log: true
+      tags: [services]
+
+  handlers:
+    - name: restart ssh
+      service: { name: "{{ ssh_service }}", state: restarted }
+      tags: [services]
+    - name: restart portash-gateway
+      service: { name: portash-gateway, state: restarted }
+      tags: [services]

@@ -97,6 +97,9 @@ artifact on the Actions page).
 
 ### On each VM (Linux)
 
+Setting VMs up from user_data with ansible-pull or cloud-init, without
+logging in? See [Provisioning without ssh](#provisioning-without-ssh-ansible-pull-cloud-init).
+
 Do this as root on every VM, with a second way in (the cloud console) until
 you have tested it. The examples use `vm1.example.com`; pick one hostname per
 VM.
@@ -401,6 +404,130 @@ For a tamper-proof record, ship the logs off the VM.
 
 Give laptops both pins (`portash login NAME --pin sha256:old,sha256:new`),
 switch the gateway's key, then drop the old pin.
+
+## Provisioning without ssh (ansible-pull, cloud-init)
+
+When VMs set themselves up from user_data with `ansible-pull`, nothing can
+log in to read a pin off a new VM. You don't need to: everything the gateway
+knows is files in `/var/lib/portash`, so you make them on an admin machine
+**before** the VM exists. You know each VM's pin in advance, the VM never
+sends anything back, and it is reachable as soon as it boots.
+
+[examples/ansible-pull/portash.yml](examples/ansible-pull/portash.yml) is a
+complete playbook for this. Copy it into your ansible-pull repository,
+together with `packaging/*.service` as `files/`.
+
+### What gets made where
+
+| File | Made | Secret | On which VMs |
+| --- | --- | --- | --- |
+| `gateway.key`, `gateway.crt` | once per VM | the key | that VM only |
+| SSH host key and its certificate | once per VM | the key | that VM only |
+| Cloudflare tunnel token | once per VM | yes | that VM only |
+| `tokens` | once per person | no (hashes and public device keys) | every VM |
+| `unlock/NAME.secret` | once per person | yes | every VM |
+
+Keep each VM's key on that VM only: then a hacked VM can't pose as the others.
+The people files are the same everywhere, so one token and one phone entry
+work for every VM, and a new VM needs nothing new from anyone.
+
+The repository layout the playbook expects:
+
+```
+portash.yml
+files/portash-authd.service, files/portash-gateway.service
+pins.txt                                  # public: one "hostname pin" line per VM
+portash-secrets/people/tokens             # plain text
+portash-secrets/people/unlock/*.secret    # ansible-vault, id "people"
+portash-secrets/vms/vm1.example.com/      # ansible-vault, id "vm", a password per VM
+    gateway.key  gateway.crt
+    ssh_host_ed25519_key  ssh_host_ed25519_key.pub  ssh_host_ed25519_key-cert.pub
+    tunnel.yml                            # cloudflare_tunnel_token: ...
+```
+
+### Once
+
+```sh
+ssh-keygen -t ed25519 -f host_ca                     # SSH host CA; keep it offline
+openssl rand -base64 32 > people.pass                # vault password for the people files
+```
+
+Keep `host_ca` and every `.pass` file out of the repository (add `*.pass`
+and `host_ca` to `.gitignore`) and in your password manager.
+
+Laptops trust the host CA with the same `@cert-authority` line as in
+[On each laptop](#on-each-laptop-linux-or-windows-macos-builds-but-is-untested).
+
+### For each person
+
+```sh
+P=portash-secrets/people
+portash token add alice-laptop --device pshd_... --ttl 2160h --dir $P   # prints alice's psh_ token
+portash totp enroll alice-laptop --unlock --dir $P                     # prints alice's otpauth:// link
+ansible-vault encrypt --vault-id people@people.pass $P/unlock/alice-laptop.secret
+```
+
+Commit, and send Alice the token, the otpauth link and `pins.txt` over a
+channel you trust. The VMs pick up the new `tokens` on their next pull.
+
+### For each VM, before creating it
+
+```sh
+VM=vm1.example.com; D=portash-secrets/vms/$VM; mkdir -p $D
+openssl rand -base64 32 > $VM.pass                   # this VM's vault password
+echo "$VM $(portash fingerprint --dir $D)" >> pins.txt
+ssh-keygen -q -t ed25519 -N '' -C $VM -f $D/ssh_host_ed25519_key
+ssh-keygen -s host_ca -I $VM -h -n $VM -V +52w $D/ssh_host_ed25519_key.pub
+echo "cloudflare_tunnel_token: PASTE-IT" > $D/tunnel.yml
+ansible-vault encrypt --vault-id vm@$VM.pass $D/gateway.key $D/ssh_host_ed25519_key $D/tunnel.yml
+```
+
+Get the tunnel token by creating a tunnel in the Cloudflare dashboard (as in
+step 6 of [On each VM](#on-each-vm-linux), with the public hostname pointing
+at `http://127.0.0.1:8080`) and copying the token from its install command,
+or create it with Terraform's Cloudflare provider. Commit.
+
+### The VM's user_data
+
+```yaml
+#cloud-config
+packages: [git, ansible-core]
+runcmd:
+  # Fetch people.pass and this VM's vm.pass to /root (mode 600) from your
+  # secret store with the VM's cloud identity, then:
+  - ansible-pull -U https://git.example.com/infra.git -e vm_name=vm1.example.com
+      --vault-id people@/root/people.pass --vault-id vm@/root/vm.pass portash.yml
+```
+
+Set `portash_url` and `portash_sha256` in the playbook to where you publish
+the Linux build. Run `ansible-pull` again from a systemd timer (every 10
+minutes, say) so the VMs pick up new and removed people.
+
+The vault passwords are the one secret the VM must get from outside. Fetch
+them from your cloud's secret store with the VM's own identity. Putting them
+in user_data works, but any process on the VM can read user_data from the
+metadata service, and so can anyone with read access to your cloud console.
+
+### On each laptop
+
+```sh
+portash device                                       # once; send pshd_... to the admin
+while read vm pin; do echo "$TOKEN" | portash login $vm --gateway https://$vm --pin $pin; done < pins.txt
+portash ssh-config >> ~/.ssh/config
+```
+
+with `TOKEN=psh_...` set first. For a VM added later, run its login line and
+`portash ssh-config NAME >> ~/.ssh/config`.
+
+### Remove a person
+
+```sh
+portash token rm alice-laptop --dir portash-secrets/people
+git rm portash-secrets/people/unlock/alice-laptop.secret
+```
+
+Commit. Each VM refuses Alice from its next pull; if that can't wait, also
+run the `token rm` on the VMs through your cloud's run-command feature.
 
 ## Without Cloudflare
 
