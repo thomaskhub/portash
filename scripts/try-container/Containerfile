@@ -1,0 +1,34 @@
+# A throwaway portash test "VM" in a container: sshd, the gateway and a
+# Cloudflare quick tunnel. Build from the repository root:
+#
+#   podman build -t portash-try -f scripts/try-container/Containerfile .
+#
+# See scripts/try-container/README.md for how to run it.
+
+FROM docker.io/library/golang:1.22 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /portash ./cmd/portash
+
+FROM docker.io/library/ubuntu:24.04
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# cloudflared, pinned to one release and checked against its SHA-256 (the
+# same pins as try-vm.sh).
+ARG CFD_VERSION=2026.10.0
+RUN set -e; \
+    case "$(uname -m)" in \
+      x86_64) ARCH=amd64; SHA=d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db ;; \
+      aarch64) ARCH=arm64; SHA=e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08 ;; \
+      *) echo "unsupported CPU"; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/cloudflared \
+      "https://github.com/cloudflare/cloudflared/releases/download/$CFD_VERSION/cloudflared-linux-$ARCH"; \
+    echo "$SHA  /usr/local/bin/cloudflared" | sha256sum -c -; \
+    chmod 755 /usr/local/bin/cloudflared
+
+COPY --from=build /portash /usr/local/bin/portash
+COPY scripts/try-container/entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

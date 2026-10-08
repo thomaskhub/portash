@@ -48,9 +48,9 @@ fi
 
 # A token for this laptop, and a TOTP secret for the daily unlock.
 portash token rm tester --dir /var/lib/portash >/dev/null 2>&1 || true
-TOKEN=$(portash token add tester --device "$DEVICE" --ttl 168h --dir /var/lib/portash 2>/dev/null)
+TOKEN=$(portash token add tester --device "$DEVICE" --ttl 168h --dir /var/lib/portash 2>/tmp/portash.err) || { cat /tmp/portash.err; exit 1; }
 portash totp rm tester --unlock --dir /var/lib/portash >/dev/null 2>&1 || true
-URI=$(portash totp enroll tester --unlock --dir /var/lib/portash 2>/dev/null)
+URI=$(portash totp enroll tester --unlock --dir /var/lib/portash 2>/tmp/portash.err) || { cat /tmp/portash.err; exit 1; }
 PIN=$(portash fingerprint --dir /var/lib/portash)
 
 cat >/etc/systemd/system/portash-gateway.service <<'UNIT'
@@ -98,7 +98,7 @@ echo "waiting for the tunnel URL..."
 URL=""
 for _ in $(seq 60); do
   URL=$(journalctl -u portash-quicktunnel --since "$SINCE" --no-pager 2>/dev/null |
-    grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | head -1 || true)
+    grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | grep -v '//api\.' | head -1 || true) # api. is not a tunnel
   [ -n "$URL" ] && break
   sleep 1
 done

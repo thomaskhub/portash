@@ -77,7 +77,9 @@ portash once on each VM, and once on each laptop.
 command behind a Cloudflare quick tunnel, with no Cloudflare account or domain,
 and prints the exact laptop commands. Run `portash device` on your laptop, copy
 the Linux binary and the script to any fresh VM, then run
-`sudo ./try-vm.sh ./portash pshd_...` there.
+`sudo ./try-vm.sh ./portash pshd_...` there. No VM at hand? The same setup
+runs in a Podman or Docker container: see
+[scripts/try-container](scripts/try-container/README.md).
 
 ### Get the binary
 
