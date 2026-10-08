@@ -72,13 +72,14 @@ $NOTE
    (paste this token when asked: $TOKEN)
    portash ssh-config trytest >> ~/.ssh/config
    (Windows PowerShell: portash ssh-config trytest | Out-File -Append -Encoding ascii \$HOME\.ssh\config)
-   Then under "Host trytest" in ~/.ssh/config add:   User tester
 
 3. Then:
    portash unlock
-   ssh trytest
+   ssh -o StrictHostKeyChecking=accept-new tester@trytest
+   (add -i ~/.ssh/KEY if your key has another name than id_ed25519)
 
-ssh asks you to accept the host key the first time. Stop with Ctrl-C.
+accept-new is needed only the first time: real VMs use a host CA instead
+(README, "Host keys"); this test has none. Stop with Ctrl-C.
 EOF
 
 # Stop the container when any of the services stops.

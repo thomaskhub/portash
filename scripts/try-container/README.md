@@ -39,7 +39,7 @@ laptop, then:
 
 ```sh
 portash unlock
-ssh trytest
+ssh -o StrictHostKeyChecking=accept-new tester@trytest   # first time only; later: ssh tester@trytest
 ```
 
 The URL changes on every start, so log in again after restarting the

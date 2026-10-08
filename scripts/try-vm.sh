@@ -118,12 +118,11 @@ portash test VM is ready at $URL
    (paste this token when asked: $TOKEN)
    portash ssh-config trytest >> ~/.ssh/config
    (Windows PowerShell: portash ssh-config trytest | Out-File -Append -Encoding ascii \$HOME\.ssh\config)
-   Then under "Host trytest" in ~/.ssh/config add:   User $LOGIN
 
-3. Every day, then just ssh:
+3. Every day, then ssh:
    portash unlock
-   ssh trytest
-
-ssh asks you to accept the VM's host key the first time (this test skips
-the host certificate step). Remove everything with: sudo $0 --remove
+   ssh -o StrictHostKeyChecking=accept-new $LOGIN@trytest
+   (accept-new only the first time: this test skips the host certificate
+   step, so ssh has no CA to check the VM's host key against)
+Remove everything with: sudo $0 --remove
 EOF
