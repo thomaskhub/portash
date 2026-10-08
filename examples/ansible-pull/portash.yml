@@ -67,6 +67,18 @@
           HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
       notify: restart ssh
 
+    # One shared account; files/devops_authorized_keys has one line per
+    # laptop, each with a role prefix (README, "Roles"), e.g.
+    #   command="portash shell" ssh-ed25519 AAAA... alice-laptop
+    - name: devops account
+      user: { name: devops, shell: /bin/bash }
+
+    - name: devops ssh folder
+      file: { path: /home/devops/.ssh, state: directory, owner: devops, group: devops, mode: "0700" }
+
+    - name: devops keys (one per laptop)
+      copy: { src: "{{ playbook_dir }}/files/devops_authorized_keys", dest: /home/devops/.ssh/authorized_keys, owner: devops, group: devops, mode: "0600" }
+
     # Copies of packaging/*.service from the portash repository.
     - name: systemd units
       copy: { src: "{{ playbook_dir }}/files/{{ item }}", dest: "/etc/systemd/system/{{ item }}", mode: "0644" }

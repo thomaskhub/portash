@@ -436,6 +436,7 @@ The repository layout the playbook expects:
 ```
 portash.yml
 files/portash-authd.service, files/portash-gateway.service
+files/devops_authorized_keys              # one line per laptop, for the shared devops account
 pins.txt                                  # public: one "hostname pin" line per VM
 portash-secrets/people/tokens             # plain text
 portash-secrets/people/unlock/*.secret    # ansible-vault, id "people"
@@ -466,6 +467,17 @@ portash token add alice-laptop --device pshd_... --ttl 2160h --dir $P   # prints
 portash totp enroll alice-laptop --unlock --dir $P                     # prints alice's otpauth:// link
 ansible-vault encrypt --vault-id people@people.pass $P/unlock/alice-laptop.secret
 ```
+
+and add the ssh key from her laptop (`ssh-keygen -t ed25519 -C alice-laptop`)
+to `files/devops_authorized_keys` with a role from [Roles](#roles):
+
+```
+command="portash shell" ssh-ed25519 AAAA... alice-laptop
+```
+
+The playbook gives every VM one shared `devops` account with these keys. Give
+each laptop its own key rather than sharing one: then removing a laptop is
+deleting its line, and nobody else has to change anything.
 
 Commit, and send Alice the token, the otpauth link and `pins.txt` over a
 channel you trust. The VMs pick up the new `tokens` on their next pull.
@@ -525,6 +537,8 @@ with `TOKEN=psh_...` set first. For a VM added later, run its login line and
 portash token rm alice-laptop --dir portash-secrets/people
 git rm portash-secrets/people/unlock/alice-laptop.secret
 ```
+
+and delete her line from `files/devops_authorized_keys`.
 
 Commit. Each VM refuses Alice from its next pull; if that can't wait, also
 run the `token rm` on the VMs through your cloud's run-command feature.
