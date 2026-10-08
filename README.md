@@ -19,9 +19,24 @@ binary, no third-party dependencies, MIT licensed.
 
 ## How it works
 
+You type a normal `ssh vm1.example.com`. Your `~/.ssh/config`, written by
+`portash ssh-config`, tells ssh to go through portash:
+
 ```
-laptop                                         VM
-ssh ──stdin/stdout── portash dial ══TLS 1.3 on :443══ portash gateway ── sshd on 127.0.0.1:22
+Host vm1.example.com
+    HostName 127.0.0.1
+    HostKeyAlias vm1.example.com
+    ProxyCommand portash dial --gateway vm1.example.com %h %p
+```
+
+What happens then:
+
+```
+ laptop                                     VM
++-----+   pipe   +--------------+  HTTPS   +-----------------+  local  +------+
+| ssh | <------> | portash dial | <======> | portash gateway | <-----> | sshd |
++-----+          +--------------+ TCP 443  +-----------------+ :22 on  +------+
+                                  TLS 1.3                   127.0.0.1
 ```
 
 * Each VM runs `portash gateway` on port 443. It only ever forwards to that
