@@ -88,7 +88,8 @@ runs in a Podman or Docker container: see
 
 ### Get the binary
 
-Until there are signed releases, build it (Go 1.22 or newer):
+Tagged versions (`v*`) are published on the GitHub Releases page with a `checksums.txt`; check the SHA-256
+before you install. Releases are not signed yet. To build it yourself (Go 1.22 or newer):
 
 ```sh
 git clone https://github.com/thomaskhub/portash && cd portash
