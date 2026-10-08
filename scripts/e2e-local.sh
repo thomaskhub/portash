@@ -12,8 +12,8 @@ export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config"; mkdir -p "$HOME"
 # Host CA: the VM's host key is signed, the laptop trusts only the CA.
 ssh-keygen -q -t ed25519 -N '' -f "$T/host_ca"
 ssh-keygen -q -t ed25519 -N '' -f "$T/hostkey"
-ssh-keygen -q -s "$T/host_ca" -I vm -h -n 127.0.0.2,vm2 -V +1h "$T/hostkey.pub"
-echo "@cert-authority 127.0.0.2,vm2 $(cat "$T/host_ca.pub")" >"$T/known_hosts"
+ssh-keygen -q -s "$T/host_ca" -I vm -h -n 127.0.0.2,vm2,vm3 -V +1h "$T/hostkey.pub"
+echo "@cert-authority 127.0.0.2,vm2,vm3 $(cat "$T/host_ca.pub")" >"$T/known_hosts"
 
 # Users: full key, restricted key, and a forced-command key missing "restrict".
 ssh-keygen -q -t ed25519 -N '' -f "$T/userkey"
@@ -136,7 +136,7 @@ echo "== per-VM gateway that needs a daily TOTP unlock, via the generated ssh co
 # A second "VM": sshd on localhost only, its own gateway with --require-unlock.
 /usr/sbin/sshd -D -e -f /dev/null -o ListenAddress=127.0.0.1:2224 -o HostKey="$T/hostkey" \
   -o HostCertificate="$T/hostkey-cert.pub" -o AuthorizedKeysFile="$T/authorized_keys" \
-  -o PasswordAuthentication=no -o StrictModes=no -o PidFile=none 2>"$T/sshd2.log" &
+  -o PasswordAuthentication=no -o StrictModes=no -o PidFile=none -o "Subsystem=sftp internal-sftp" 2>"$T/sshd2.log" &
 "$T/portash" token add laptop --device "$DEVICE" --ttl 1h --dir "$T/gw2" >"$T/token2" 2>/dev/null
 SECRET=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP
 echo "$SECRET" | "$T/portash" totp import laptop --unlock --dir "$T/gw2"
@@ -164,6 +164,67 @@ for i in 1 2 3; do ssh -F "$T/ssh_config" vm2 "echo vm2 run $i ok"; done
 echo "one code, then three connections without prompts (as Ansible would make)"
 if "$T/portash" unlock vm2 <"$T/code" 2>"$T/err"; then echo "FAIL: reused code accepted"; exit 1; fi
 echo "reused code refused: $(cat "$T/err" | head -1)"
+
+echo "== behind a TLS-terminating proxy (as Cloudflare Tunnel or Caddy), via the generated ssh config"
+# Third "VM": the same localhost sshd, its gateway listening only for the tunnel.
+"$T/portash" token add laptop --device "$DEVICE" --ttl 1h --dir "$T/gw3" >"$T/token3" 2>/dev/null
+echo "$SECRET" | "$T/portash" totp import laptop --unlock --dir "$T/gw3"
+"$T/portash" gateway --dir "$T/gw3" --listen "" --tunnel-listen 127.0.0.1:8081 --tunnel-ip-header X-Real-IP \
+  --network 127.0.0.1/32 --ports 2224 --require-unlock 2>"$T/gw3.log" &
+# The "edge": terminates HTTPS with its own certificate (trusted by the laptop
+# like Cloudflare's) and passes the decrypted bytes to the tunnel listener.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=edge \
+  -addext subjectAltName=IP:127.0.0.1 -keyout "$T/edge.key" -out "$T/edge.crt" 2>/dev/null
+cat >"$T/edge.py" <<'PY'
+import socket, ssl, sys, threading
+def pump(a, b):
+    try:
+        while (d := a.recv(65536)):
+            b.sendall(d)
+    except OSError:
+        pass
+    for s in (a, b):
+        try: s.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+def serve(c):
+    try:
+        t = ctx.wrap_socket(c, server_side=True)
+    except OSError:
+        return
+    u = socket.create_connection(("127.0.0.1", 8081))
+    threading.Thread(target=pump, args=(t, u), daemon=True).start()
+    pump(u, t)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(sys.argv[1], sys.argv[2])
+ln = socket.create_server(("127.0.0.1", 9444), reuse_port=True)
+while True:
+    c, _ = ln.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+PY
+python3 -I "$T/edge.py" "$T/edge.crt" "$T/edge.key" & EDGE=$!
+export SSL_CERT_FILE="$T/edge.crt"
+sleep 1
+"$T/portash" login vm3 --gateway https://127.0.0.1:9444 --pin "$("$T/portash" fingerprint --dir "$T/gw3")" <"$T/token3"
+{ "$T/portash" ssh-config vm3
+  printf 'Host vm3\n  Port 2224\n  User root\n  IdentityFile %s\n  IdentitiesOnly yes\n  BatchMode yes\n  UserKnownHostsFile %s\n  GlobalKnownHostsFile /dev/null\n' \
+    "$T/userkey" "$T/known_hosts"
+} >>"$T/ssh_config"
+if ssh -F "$T/ssh_config" vm3 true 2>"$T/err"; then echo "FAIL: connected without unlocking"; exit 1; fi
+grep -o 'unlock required.*' "$T/err"
+"$T/portash" unlock vm3 <"$T/code"
+ssh -F "$T/ssh_config" vm3 'echo vm3 ok through the proxy'
+head -c 5000000 /dev/urandom >"$T/big3"
+scp -q -F "$T/ssh_config" "$T/big3" vm3:"$T/big3.copy"
+cmp "$T/big3" "$T/big3.copy" && echo "scp 5 MB through the proxy: identical"
+ssh -F "$T/ssh_config" vm3 'for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done' >"$T/ticks3" &
+SSHPID=$!
+sleep 1.5; kill $EDGE; sleep 2
+python3 -I "$T/edge.py" "$T/edge.crt" "$T/edge.key" & EDGE=$!
+wait $SSHPID
+[ "$(grep -c tick "$T/ticks3")" = 6 ] || { echo "FAIL: ticks lost through proxy drop"; cat "$T/ticks3"; exit 1; }
+echo "session survived the proxy going away for 2 seconds"
+grep -q 'open 127.0.0.1' "$T/gw3.log" || { echo "FAIL: tunnel stream missing from the gateway log"; cat "$T/gw3.log"; exit 1; }
+unset SSL_CERT_FILE
 
 echo "== gateway log"; cat "$T/gw.log"
 echo PASS

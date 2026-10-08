@@ -72,6 +72,12 @@ Each VM has its own gateway: one hacked VM doesn't open the others.
 You need a domain on Cloudflare (the free plan is enough). Then install
 portash once on each VM, and once on each laptop.
 
+**Just trying it out?** `scripts/try-vm.sh` sets up a throwaway VM in one
+command behind a Cloudflare quick tunnel, with no Cloudflare account or domain,
+and prints the exact laptop commands. Run `portash device` on your laptop, copy
+the Linux binary and the script to any fresh VM, then run
+`sudo ./try-vm.sh ./portash pshd_...` there.
+
 ### Get the binary
 
 Until there are signed releases, build it (Go 1.22 or newer):
@@ -190,6 +196,10 @@ echo "@cert-authority *.example.com $(cat host_ca.pub)" >> ~/.ssh/known_hosts
 ```
 
 The laptop needs nothing from Cloudflare: no `cloudflared`, no account.
+
+On Windows, in PowerShell, `>>` writes UTF-16, which ssh can't read. Use
+`portash ssh-config | Out-File -Append -Encoding ascii $HOME\.ssh\config`
+instead.
 
 Add your login and SSH key under each `Host` block as with any ssh host:
 
