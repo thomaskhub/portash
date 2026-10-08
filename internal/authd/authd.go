@@ -31,7 +31,16 @@ const (
 	DefaultSocket = "/run/portash/authd.sock"
 	maxRecording  = 256 << 20
 	maxLine       = 16 << 10
+
+	defaultMaxLogBytes = 64 << 20 // rotate audit.log beyond this
+	defaultKeepLogs    = 8        // rotated files kept: audit.log.1 ... .N
+	defaultLogRate     = 20       // "log" requests per second per user
+	defaultLogBurst    = 100
 )
+
+// logEvents are the events a session may write with the "log" op. authd
+// writes its own (totp, record) itself.
+var logEvents = map[string]bool{"session": true}
 
 type Request struct {
 	Op     string `json:"op"`               // "totp", "log" or "record"
@@ -50,8 +59,52 @@ type Server struct {
 	LogDir string // audit.log and sessions/ live here
 	Log    *log.Logger
 
+	// MaxLogBytes rotates audit.log when it grows beyond it (default 64 MiB);
+	// KeepLogs rotated files are kept (default 8). LogRate and LogBurst limit
+	// the "log" op per user, so one account can't fill the disk (and with it
+	// make every login fail, since sessions are refused when logging fails).
+	MaxLogBytes int64
+	KeepLogs    int
+	LogRate     float64
+	LogBurst    float64
+
 	mu        sync.Mutex
 	recording map[int]int // open recordings per uid
+	buckets   map[int]*bucket
+}
+
+type bucket struct {
+	tokens float64
+	last   time.Time
+}
+
+// allowLog reports whether uid may write another audit line now.
+func (s *Server) allowLog(uid int) bool {
+	rate, burst := s.LogRate, s.LogBurst
+	if rate <= 0 {
+		rate = defaultLogRate
+	}
+	if burst <= 0 {
+		burst = defaultLogBurst
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.buckets == nil {
+		s.buckets = map[int]*bucket{}
+	}
+	now := time.Now()
+	b := s.buckets[uid]
+	if b == nil {
+		b = &bucket{tokens: burst, last: now}
+		s.buckets[uid] = b
+	}
+	b.tokens = min(burst, b.tokens+now.Sub(b.last).Seconds()*rate)
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 // ListenAndServe serves until ctx is cancelled.
@@ -130,9 +183,17 @@ func (s *Server) handle(c *net.UnixConn) {
 		s.audit(name, uid, pid, "totp", result(err))
 		reply(c, err)
 	case "log":
+		if !logEvents[req.Event] {
+			reply(c, fmt.Errorf("unknown event %q", clean(req.Event, 32)))
+			return
+		}
+		if !s.allowLog(uid) {
+			reply(c, errors.New("too many log requests; slow down"))
+			return
+		}
 		// Refuse if the line can't be written (disk full): the shell then
 		// refuses the session rather than running it unlogged.
-		reply(c, s.audit(name, uid, pid, clean(req.Event, 32), clean(req.Detail, 4096)))
+		reply(c, s.audit(name, uid, pid, req.Event, clean(req.Detail, 4096)))
 	case "record":
 		if !s.startRecording(uid) {
 			reply(c, fmt.Errorf("too many open recordings for %s", name))
@@ -214,15 +275,18 @@ func (s *Server) endRecording(uid int) {
 }
 
 // audit appends one line. user, uid and pid come from the kernel
-// (SO_PEERCRED); event and detail are what that user's process sent.
+// (SO_PEERCRED); event is one of ours, and detail is what that user's process
+// sent, so it is quoted and can't add fields of its own.
 func (s *Server) audit(name string, uid, pid int, event, detail string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	line := fmt.Sprintf("%s user=%s uid=%d pid=%d event=%s %s\n", time.Now().UTC().Format(time.RFC3339), name, uid, pid, event, detail)
+	line := fmt.Sprintf("%s user=%s uid=%d pid=%d event=%s detail=%s\n", time.Now().UTC().Format(time.RFC3339), name, uid, pid, event, strconv.Quote(detail))
 	if s.Log != nil {
 		s.Log.Print(strings.TrimSpace(line))
 	}
-	f, err := os.OpenFile(filepath.Join(s.LogDir, "audit.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	path := filepath.Join(s.LogDir, "audit.log")
+	s.rotateLocked(path)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -231,6 +295,28 @@ func (s *Server) audit(name string, uid, pid int, event, detail string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// rotateLocked moves audit.log to audit.log.1 (shifting older ones, dropping
+// the oldest) once it is over MaxLogBytes. Errors are ignored: a failed
+// rotation must not stop logging, and the write that follows reports a real
+// problem.
+func (s *Server) rotateLocked(path string) {
+	limit, keep := s.MaxLogBytes, s.KeepLogs
+	if limit <= 0 {
+		limit = defaultMaxLogBytes
+	}
+	if keep <= 0 {
+		keep = defaultKeepLogs
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() < limit {
+		return
+	}
+	for i := keep - 1; i >= 1; i-- {
+		os.Rename(fmt.Sprintf("%s.%d", path, i), fmt.Sprintf("%s.%d", path, i+1))
+	}
+	os.Rename(path, path+".1")
 }
 
 func (s *Server) openRecording(name string, pid int, detail string) (*os.File, string, error) {
