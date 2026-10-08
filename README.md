@@ -593,7 +593,8 @@ connections directly.
 For the lowest latency, or a VM with a public IP and nothing else on 443, the
 gateway can serve TLS itself. In `portash-gateway.service`, replace
 `--listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP`
-with `--listen :443` (or keep both), open TCP 443 in the firewall, and log
+with `--listen :443` (or keep both), set `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and remove the two `IPAddress` lines (they confine the
+gateway to this host), open TCP 443 in the firewall, and log
 laptops in with the host name instead of a URL:
 
 ```sh

@@ -12,10 +12,13 @@ ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --dir
     --listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
 Restart=on-failure
 # Runs as root so `sudo portash token add` files are readable, but with every
-# capability except binding :443 removed.
+# capability removed, and with no network except this host: in per-VM mode it
+# only talks to cloudflared and to its own sshd on localhost.
 StateDirectory=portash
 StateDirectoryMode=0700
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/portash
@@ -23,6 +26,11 @@ ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
 PrivateTmp=yes
 PrivateDevices=yes
 RestrictAddressFamilies=AF_INET AF_INET6
