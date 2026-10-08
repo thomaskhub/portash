@@ -118,11 +118,27 @@ func (ts *ticketStore) saveLocked() error {
 	if ts.file == "" {
 		return nil
 	}
-	tmp := filepath.Join(filepath.Dir(ts.file), ".tickets.tmp")
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(ts.file), ".tickets-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, ts.file)
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), ts.file)
 }
 
 // ticketHash parses the Portash-Ticket header.
