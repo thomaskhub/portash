@@ -34,13 +34,21 @@ Host vm1.example.com
 
 What happens then:
 
-```
- laptop                              Cloudflare            VM
-+-----+  pipe  +--------------+ HTTPS +--------+  tunnel  +-------------+       +---------+       +------+
-| ssh | <----> | portash dial | <===> |  edge  | <======> | cloudflared | <---> | portash | <---> | sshd |
-+-----+        +--------------+  :443 +--------+          +-------------+ :8080 | gateway |  :22  +------+
-                      |                                                         +---------+
-                      +---------- pinned TLS 1.3 inside, end to end ---------------+
+```mermaid
+flowchart LR
+    subgraph laptop[Laptop]
+        ssh[ssh] <-->|pipe| dial[portash dial]
+    end
+    subgraph cf[Cloudflare]
+        edge[edge]
+    end
+    subgraph vm[VM: no inbound ports]
+        cfd[cloudflared] <-->|127.0.0.1:8080| gw[portash gateway]
+        gw <-->|127.0.0.1:22| sshd[sshd]
+    end
+    dial <-->|HTTPS :443| edge
+    edge <-->|tunnel, dialled out by the VM| cfd
+    dial -. pinned TLS 1.3 inside, end to end .- gw
 ```
 
 * `cloudflared` on the VM keeps an outbound connection to Cloudflare, so
