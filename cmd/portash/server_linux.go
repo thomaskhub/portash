@@ -222,6 +222,9 @@ func cmdShell(args []string) error {
 		mode = "exec"
 	}
 	detail := fmt.Sprintf("mode=%s sandbox=%v from=%q cmd=%q", mode, *sb, os.Getenv("SSH_CONNECTION"), cmdline)
+	if *sb {
+		detail += fmt.Sprintf(" landlock_abi=%d", sandbox.ABI())
+	}
 	if err := authd.Log(*socket, "session", detail); err != nil && !*failOpen {
 		return fmt.Errorf("refusing session: can't write the audit log (%v)", err)
 	}

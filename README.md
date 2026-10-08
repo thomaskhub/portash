@@ -328,6 +328,20 @@ refuses writes outside the allowed directories, however the command is written
 (`r''m`, base64, a script, vim, python), and for everything the session starts.
 Reading is not restricted, and sudo is disabled inside it.
 
+What the sandbox does **not** cover (it is a write guard, not a container):
+
+* Reading: the session can read every file its Unix user can, including that
+  user's `~/.ssh` and any readable secrets or configs.
+* Other processes and services: it can still talk to local daemons through
+  Unix sockets (for example `/var/run/docker.sock`, if the user may open it),
+  send signals to its own user's processes and use the network. A service that
+  does work for its callers can therefore be used to write where the sandbox
+  does not allow. Do not give the Operator role to a user in the `docker`
+  group or with access to similar sockets.
+* The audit log records the kernel's Landlock ABI (`landlock_abi=N`) for every
+  sandboxed session. Newer ABIs add network and socket scoping that portash
+  does not use yet.
+
 ### TOTP sudo
 
 Enroll the user for sudo codes (separate from the daily unlock), and scan the
