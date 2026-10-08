@@ -50,7 +50,9 @@ func TestLogDetailCannotForgeFields(t *testing.T) {
 		t.Fatalf("no detail field: %q", line)
 	}
 	head := line[:i]
-	if strings.Count(head, "user=") != 1 || strings.Contains(head, "user=root") {
+	// Exactly one of each field before detail (the test may run as root, so
+	// "user=root" itself proves nothing).
+	if strings.Count(head, "user=") != 1 || strings.Count(head, "uid=") != 1 || strings.Count(head, "event=") != 1 {
 		t.Fatalf("fields before detail were changed: %q", head)
 	}
 	if !strings.HasSuffix(line, `detail="x user=root uid=0 event=totp ok"`) {

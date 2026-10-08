@@ -66,9 +66,12 @@ flowchart LR
   may do; `portash authd` checks TOTP codes and writes the audit log and
   recordings as root.
 
-Each VM has its own gateway, token and host key: one hacked VM doesn't open the
-others. The one thing people share between their VMs is their unlock TOTP
-secret (see [Add a person](#add-a-person)).
+Each VM has its own gateway key and host key: one hacked VM doesn't open the
+others. What a person uses on all their VMs is their unlock TOTP secret (see
+[Add a person](#add-a-person)) and, with
+[ansible-pull provisioning](#provisioning-without-ssh-ansible-pull-cloud-init),
+their token. Neither is enough on its own: each connection also needs the
+laptop's device key.
 
 ## Installation
 
