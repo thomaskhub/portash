@@ -94,6 +94,8 @@ func TestWildcardDoesNotCrossSlash(t *testing.T) {
 		"cat /var/log/app/today.log":        true,
 		"cat /var/log/app/../../etc/shadow": false,
 		"cat /var/log/app/x/y":              false,
+		"cat /var/log/app/..":               false,
+		"cat /var/log/app/.secret":          false,
 	} {
 		args, _ := Split(c)
 		if r, _ := p.Check(args); (r != nil) != want {
@@ -139,12 +141,13 @@ func TestLinterRefusesShellEscapes(t *testing.T) {
 		"bash\n", "/bin/sh -c uptime\n", "vim /etc/hosts\n", "less /var/log/syslog\n",
 		"python3 ...\n", "sudo systemctl restart nginx\n", "find /var/log ...\n", "env\n",
 		"docker run *\n", "git ...\n", "tar -xf *\n",
+		"python3.12 ...\n", "perl5.36 -e *\n", "taskset 1 *\n", "systemctl * nginx\n", "ip ...\n",
 	} {
 		if _, err := Parse(strings.NewReader(bad), "t"); err == nil {
 			t.Errorf("linter accepted %q", bad)
 		}
 	}
-	for _, ok := range []string{"docker ps\n", "git -C /srv/app pull\n", "!unsafe less /var/log/app.log\n"} {
+	for _, ok := range []string{"docker ps\n", "git -C /srv/app pull\n", "systemctl status ...\n", "!unsafe less /var/log/app.log\n"} {
 		p, err := Parse(strings.NewReader(ok), "t")
 		if err != nil {
 			t.Errorf("linter refused %q: %v", ok, err)
@@ -188,5 +191,18 @@ systemctl status ...
 	}
 	if _, err := Parse(strings.NewReader("!sudo ls\n"), "t"); err == nil {
 		t.Error("unknown flag accepted")
+	}
+}
+
+func TestHiddenNeedsADotInThePattern(t *testing.T) {
+	p, _ := Parse(strings.NewReader("cat /home/deploy/*\ncat /home/deploy/.*\n"), "t")
+	args, _ := Split("cat /home/deploy/.profile")
+	if r, _ := p.Check(args); r == nil || r.Tokens[1] != "/home/deploy/.*" {
+		t.Fatalf("dotfile should match only the rule that spells the dot, got %v", r)
+	}
+	p, _ = Parse(strings.NewReader("cat /home/deploy/*\n"), "t")
+	args, _ = Split("cat /home/deploy/.ssh")
+	if r, _ := p.Check(args); r != nil {
+		t.Fatal("* matched a hidden file")
 	}
 }

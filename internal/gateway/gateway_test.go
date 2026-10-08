@@ -628,3 +628,64 @@ func TestResumeThroughTunnel(t *testing.T) {
 	}
 	roundTrip(t, c)
 }
+
+func TestTunnelRefusesMissingIPHeader(t *testing.T) {
+	tl := gateway.NewTunnelListener("CF-Connecting-IP")
+	defer tl.Close()
+	r := httptest.NewRequest("GET", gateway.TunnelPath, nil)
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Sec-WebSocket-Version", "13")
+	r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	w := httptest.NewRecorder()
+	tl.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400 when the proxy's IP header is missing", w.Code)
+	}
+}
+
+func TestPerIPConnectionCap(t *testing.T) {
+	e := setupWith(t, func(c *gateway.Config) { c.MaxConnsPerIP = 2 })
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := e.g.Listener(raw)
+	defer ln.Close()
+	accepted := make(chan net.Conn, 3)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	var clients []net.Conn
+	for i := 0; i < 3; i++ {
+		c, err := net.Dial("tcp", raw.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		clients = append(clients, c)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := len(accepted); n != 2 {
+		t.Fatalf("%d connections accepted from one IP, want 2", n)
+	}
+	clients[2].SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := clients[2].Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("third connection not closed: %v", err)
+	}
+	// Closing one frees its slot.
+	(<-accepted).Close()
+	c, _ := net.Dial("tcp", raw.Addr().String())
+	defer c.Close()
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slot not freed")
+	}
+}

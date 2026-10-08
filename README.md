@@ -60,7 +60,8 @@ flowchart LR
   own TLS 1.3, pinned to the gateway's key, and SSH runs inside that.
   Cloudflare only ever sees encrypted bytes and can't impersonate the VM.
 * To get in, a laptop needs its token (bound to that laptop's device key, so a
-  copied token is useless), a daily TOTP unlock, and then a normal SSH key.
+  token leaked on its own is useless), a daily TOTP unlock, and then a normal
+  SSH key.
 * After login, `portash shell` and `portash restrict` decide what the session
   may do; `portash authd` checks TOTP codes and writes the audit log and
   recordings as root.
@@ -313,7 +314,7 @@ in sshd_config):
 
 | Role | authorized_keys prefix | What they get |
 | --- | --- | --- |
-| Admin | `command="portash shell"` | Full shell, every session recorded, every command logged, sudo per sudoers |
+| Admin | `command="portash shell"` | Full shell; every session logged and every terminal session recorded; sudo per sudoers |
 | Operator | `command="portash shell --sandbox --write ~/work"` | Full shell, recorded, but can only create, change or delete files in `/tmp`, `/var/tmp` and `~/work`; no sudo |
 | Restricted | `restrict,command="portash restrict --policy FILE"` | Only allowlisted commands; some can require a TOTP code |
 
@@ -368,8 +369,11 @@ journalctl -u nginx -n *
 restrict,command="/usr/local/bin/portash restrict --policy /etc/portash/policy/deploy --name ci-bot" ssh-ed25519 AAAA... ci-bot
 ```
 
-`restrict` also turns off port, agent and X11 forwarding and the PTY; without
-it, portash refuses to run. Commands run directly, never through a shell, with
+`restrict` also turns off port, agent and X11 forwarding and the PTY. Don't
+leave it out: portash notices a missing `restrict` only when a terminal is
+requested, and without it `ssh -N -L ...` forwards ports without running any
+command. For defence in depth, also set `DisableForwarding yes` in a
+`Match User` block for these users in sshd_config. Commands run directly, never through a shell, with
 a fixed PATH and a scrubbed environment. Test a rule with
 `portash restrict --policy FILE --check 'systemctl restart nginx'`. The linter
 catches the common shell escapes, but no list is complete: check any program
@@ -377,15 +381,19 @@ you allow for ways to start other programs.
 
 ### Logs and recordings
 
-* `/var/log/portash/audit.log`: every session and command, written by authd.
-* `/var/log/portash/sessions/<user>/*.cast`: interactive sessions, play with
-  `asciinema play FILE`.
+* `/var/log/portash/audit.log`: every session, with the command when one was given
+  (`ssh vm cmd`, scp, Ansible), written by authd. User, uid and pid come from
+  the kernel; the rest is what that user's session reported.
+* `/var/log/portash/sessions/<user>/*.cast`: every session with a terminal
+  (`ssh vm`, `ssh -t vm cmd`): what it printed, which includes what was typed
+  when the terminal echoes it. Play with `asciinema play FILE`.
 * `journalctl -u portash-gateway`: connections, unlocks, denials.
 * `journalctl -t portash-restrict`: every allowed and denied restricted command.
 
 If authd is down, sessions are refused (`--fail-open` to allow them anyway).
-Admins without `--sandbox` can write around the recording; the audit log still
-sees every command.
+Commands typed inside an interactive shell are only in the recording, not in
+the audit log, and admins without `--sandbox` can write around the recording.
+For a tamper-proof record, ship the logs off the VM.
 
 ### Rotate the gateway key
 
@@ -413,9 +421,19 @@ portash login vm1.example.com --pin sha256:...
 
 If a web server already holds port 443, route a hostname to `127.0.0.1:8080`
 like any other site; WebSockets must be allowed (they are by default in Caddy
-and Traefik). Set `--tunnel-ip-header` to what your proxy sends, usually
-`X-Real-IP` or `X-Forwarded-For`, and log laptops in with
-`--gateway https://vm1.example.com` as above.
+and Traefik). Log laptops in with `--gateway https://vm1.example.com` as above.
+
+`--tunnel-ip-header` must name a header your proxy always sets itself,
+overwriting whatever the client sent; otherwise clients can fake their address
+to dodge the lockout or get someone else locked out. Connections without the
+header are refused.
+
+| Proxy | Header to use | Proxy setting |
+| --- | --- | --- |
+| Cloudflare Tunnel | `CF-Connecting-IP` | none |
+| Caddy | `X-Forwarded-For` | none (Caddy replaces it unless `trusted_proxies` is set) |
+| nginx | `X-Real-IP` | `proxy_set_header X-Real-IP $remote_addr;` |
+| Traefik | `X-Real-Ip` | none (Traefik sets it to the client address; check your version) |
 
 ```
 # Caddyfile
@@ -424,12 +442,12 @@ vm1.example.com {
 }
 ```
 
-Keep the tunnel port on `127.0.0.1` in every setup: the gateway trusts the IP
-header, so anyone who could reach that port directly could fake their address.
+Keep the tunnel port on `127.0.0.1` in every setup: anyone who could reach it
+directly could fake their address.
 
 ### With a Vabbit VPN
 
-If your VMs are on a Vabbit VPN, one gateway can serve all of them, and laptops
+Vabbit is a separate WireGuard VPN project. If your VMs are on a Vabbit VPN, one gateway can serve all of them, and laptops
 go direct over WireGuard whenever UDP works:
 
 ```sh
@@ -469,4 +487,7 @@ Status: prototype. Not yet: signed releases, device keys in the OS keychain.
 ## License
 
 MIT, see [LICENSE](LICENSE). Dependencies and their licenses are listed in
-[sbom/](sbom/README.md): none besides the Go standard library.
+[sbom/](sbom/README.md): none besides the Go standard library (BSD-3-Clause).
+
+portash is not affiliated with or endorsed by Cloudflare; Cloudflare Tunnel is
+named as one compatible way to reach the gateway.

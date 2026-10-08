@@ -8,6 +8,7 @@ Restart=always
 RuntimeDirectory=portash
 RuntimeDirectoryMode=0755
 StateDirectory=portash
+StateDirectoryMode=0700
 LogsDirectory=portash
 LogsDirectoryMode=0700
 NoNewPrivileges=yes
@@ -19,6 +20,13 @@ PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,22 @@ func TestMain(m *testing.M) {
 		try("read-denied-dir", err)
 		// Children inherit the sandbox: a shell can't escape it.
 		try("child-shell", exec.Command("/bin/sh", "-c", "echo x > "+filepath.Join(denied, "g")).Run())
+		// Landlock is per thread: after the scheduler has had every chance
+		// to move this goroutine, its children must still be confined.
+		escaped := false
+		for i := 0; i < 20; i++ {
+			for j := 0; j < 50; j++ {
+				runtime.Gosched()
+			}
+			if exec.Command("/bin/sh", "-c", "echo x > "+filepath.Join(denied, "h")).Run() == nil {
+				escaped = true
+			}
+		}
+		if escaped {
+			out = append(out, "later-child=ok")
+		} else {
+			out = append(out, "later-child=denied")
+		}
 		os.Stdout.WriteString(strings.Join(out, " "))
 		os.Exit(0)
 	}
@@ -55,7 +72,7 @@ func TestRestrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child: %v %s", err, out)
 	}
-	want := "write-allowed=ok write-denied=denied delete-denied=denied rename-out=denied truncate-denied=denied read-denied-dir=ok child-shell=denied"
+	want := "write-allowed=ok write-denied=denied delete-denied=denied rename-out=denied truncate-denied=denied read-denied-dir=ok child-shell=denied later-child=denied"
 	if string(out) != want {
 		t.Fatalf("got  %s\nwant %s", out, want)
 	}

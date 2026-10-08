@@ -27,7 +27,14 @@ PrivateTmp=yes
 PrivateDevices=yes
 RestrictAddressFamilies=AF_INET AF_INET6
 SystemCallFilter=@system-service
-MemoryMax=128M
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+UMask=0077
+MemoryMax=256M
 
 [Install]
 WantedBy=multi-user.target

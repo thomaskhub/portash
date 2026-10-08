@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"portash/internal/wsconn"
 )
@@ -49,9 +50,14 @@ func (t *TunnelListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if i := strings.LastIndexByte(v, ','); i >= 0 {
 			v = v[i+1:]
 		}
-		if ip, err := netip.ParseAddr(strings.TrimSpace(v)); err == nil {
-			remote = net.TCPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), 0))
+		ip, err := netip.ParseAddr(strings.TrimSpace(v))
+		if err != nil {
+			// Fail closed: without the proxy's word on who this is, the
+			// per-IP limits can't work.
+			http.Error(w, "missing client address header", http.StatusBadRequest)
+			return
 		}
+		remote = net.TCPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), 0))
 	}
 	c, err := wsconn.Accept(w, r, remote)
 	if err != nil {
@@ -60,6 +66,8 @@ func (t *TunnelListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	select {
 	case t.conns <- c:
 	case <-t.done:
+		c.Close()
+	case <-time.After(10 * time.Second): // the gateway is at its connection cap
 		c.Close()
 	}
 }

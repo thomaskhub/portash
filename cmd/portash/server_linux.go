@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -148,6 +149,12 @@ func cmdShell(args []string) error {
 		}
 		paths = append(paths, w)
 	}
+	if *sb {
+		// Landlock and no_new_privs apply to the calling thread only. Keep
+		// this goroutine on one thread from here on, so the restricted thread
+		// is the one that execs or forks the shell.
+		runtime.LockOSThread()
+	}
 	confine := func(extra ...string) error {
 		if !*sb {
 			return nil
@@ -160,8 +167,12 @@ func cmdShell(args []string) error {
 	shell := loginShell()
 	cmdline, hasCmd := os.LookupEnv("SSH_ORIGINAL_COMMAND")
 	hasCmd = hasCmd && cmdline != ""
+	tty := session.IsTerminal(os.Stdin)
 	mode := "interactive"
-	if hasCmd {
+	switch {
+	case hasCmd && tty:
+		mode = "exec-pty" // ssh -t host cmd: recorded like a login
+	case hasCmd:
 		mode = "exec"
 	}
 	detail := fmt.Sprintf("mode=%s sandbox=%v from=%q cmd=%q", mode, *sb, os.Getenv("SSH_CONNECTION"), cmdline)
@@ -169,7 +180,7 @@ func cmdShell(args []string) error {
 		return fmt.Errorf("refusing session: can't write the audit log (%v)", err)
 	}
 
-	if hasCmd || !session.IsTerminal(os.Stdin) {
+	if !tty {
 		// scp, rsync, ansible, `ssh host cmd`: logged above, not recorded.
 		if err := confine(); err != nil {
 			return err
@@ -197,6 +208,9 @@ func cmdShell(args []string) error {
 	}
 	cmd := exec.Command(shell)
 	cmd.Args = []string{"-" + filepath.Base(shell)} // login shell
+	if hasCmd {
+		cmd.Args = []string{filepath.Base(shell), "-c", cmdline}
+	}
 	cmd.Env = os.Environ()
 	var w interface{ Write([]byte) (int, error) }
 	if rec != nil {

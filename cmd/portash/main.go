@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -235,12 +236,12 @@ func cmdGateway(ctx context.Context, args []string) error {
 			return err
 		}
 		tl := gateway.NewTunnelListener(*tunnelIP)
-		front := &http.Server{Handler: tl, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 8 << 10,
-			ErrorLog: log.New(io.Discard, "", 0)}
+		front := &http.Server{Handler: tl, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+			MaxHeaderBytes: 8 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 		inner := g.Server("", cert)
 		servers = append(servers, front, inner)
 		logger.Printf("tunnel (WebSocket at %s) on %s", gateway.TunnelPath, *tunnelListen)
-		go func() { errc <- front.Serve(g.Listener(ln)) }()
+		go func() { errc <- front.Serve(gateway.LimitListener(ln, *maxConns)) }()
 		go func() { errc <- inner.ServeTLS(g.Listener(tl), "", "") }()
 	}
 	select {
@@ -397,10 +398,26 @@ func writePrivate(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// A new private file renamed over the old one, so the secret is never in
+	// a file with looser permissions, nor half written.
+	f, err := os.CreateTemp(filepath.Dir(path), ".portash-*")
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // deviceKey loads this laptop's Ed25519 device key, creating it on first use.

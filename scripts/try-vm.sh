@@ -28,16 +28,22 @@ case "$DEVICE" in pshd_*) ;; *) echo "the second argument is the pshd_... key fr
 install -m 755 "$BIN" /usr/local/bin/portash
 mkdir -p /var/lib/portash && chmod 700 /var/lib/portash
 
+# cloudflared, pinned to one release and checked against its SHA-256 (taken
+# from the GitHub release download when this script was written).
+CFD_VERSION=2026.10.0
 case "$(uname -m)" in
-  x86_64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
+  x86_64) ARCH=amd64; CFD_SHA=d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db ;;
+  aarch64|arm64) ARCH=arm64; CFD_SHA=e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08 ;;
   *) echo "unsupported CPU $(uname -m)"; exit 1 ;;
 esac
 if ! command -v cloudflared >/dev/null; then
-  echo "downloading cloudflared..."
-  curl -fsSL -o /usr/local/bin/cloudflared \
-    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$ARCH"
-  chmod 755 /usr/local/bin/cloudflared
+  echo "downloading cloudflared $CFD_VERSION..."
+  TMP=$(mktemp)
+  curl -fsSL -o "$TMP" \
+    "https://github.com/cloudflare/cloudflared/releases/download/$CFD_VERSION/cloudflared-linux-$ARCH"
+  echo "$CFD_SHA  $TMP" | sha256sum -c --quiet - || { echo "cloudflared checksum mismatch"; rm -f "$TMP"; exit 1; }
+  install -m 755 "$TMP" /usr/local/bin/cloudflared
+  rm -f "$TMP"
 fi
 
 # A token for this laptop, and a TOTP secret for the daily unlock.
@@ -57,6 +63,12 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --dir /var/lib/portash --require-unlock \
     --listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
 Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/portash
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

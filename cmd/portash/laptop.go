@@ -172,6 +172,11 @@ func cmdLogin(args []string) error {
 		}
 		pinList = append(pinList, p)
 	}
+	if strings.HasPrefix(addr, "https://") && len(pinList) == 0 {
+		// The proxy in front holds a public certificate for this name, so
+		// without a pin it could pose as the gateway.
+		return errors.New("--pin is required for a gateway behind a tunnel or proxy (portash fingerprint on the VM prints it)")
+	}
 	if *network != "" {
 		if _, err := netip.ParsePrefix(*network); err != nil {
 			return errors.New("--network must be a CIDR")

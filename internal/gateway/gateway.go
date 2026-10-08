@@ -40,15 +40,16 @@ const (
 )
 
 type Config struct {
-	Network     netip.Prefix  // targets must be inside this prefix
-	Ports       map[int]bool  // and use one of these ports
-	Tokens      *tokens.Store // who may connect
-	MaxStreams  int           // concurrent streams per token (default 16)
-	MaxConns    int           // concurrent TCP connections in total (default 512)
-	IdleTimeout time.Duration // close a stream with no traffic either way (default 10m)
-	MaxSession  time.Duration // close any stream after this long (default 24h)
-	FailLimit   int           // failed attempts per IP per 10 minutes before it is ignored (default 10)
-	SweepEvery  time.Duration // how often open streams are re-checked (default 5s)
+	Network       netip.Prefix  // targets must be inside this prefix
+	Ports         map[int]bool  // and use one of these ports
+	Tokens        *tokens.Store // who may connect
+	MaxStreams    int           // concurrent streams per token (default 16)
+	MaxConns      int           // concurrent TCP connections in total (default 512)
+	IdleTimeout   time.Duration // close a stream with no traffic either way (default 10m)
+	MaxSession    time.Duration // close any stream after this long (default 24h)
+	FailLimit     int           // failed attempts per IP per 10 minutes before it is ignored (default 10)
+	MaxConnsPerIP int           // concurrent connections from one IP (an IPv6 /64) (default 32)
+	SweepEvery    time.Duration // how often open streams are re-checked (default 5s)
 	// ResumeWindow is how long a resumable stream waits for its client to
 	// reconnect before the connection to the target is closed (default 10m).
 	ResumeWindow time.Duration
@@ -102,6 +103,9 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.MaxSession <= 0 {
 		cfg.MaxSession = 24 * time.Hour
 	}
+	if cfg.MaxConnsPerIP <= 0 {
+		cfg.MaxConnsPerIP = 32
+	}
 	if cfg.FailLimit <= 0 {
 		cfg.FailLimit = 10
 	}
@@ -152,25 +156,60 @@ func (g *Gateway) Server(addr string, cert tls.Certificate) *http.Server {
 	}
 }
 
-// Listener caps concurrent connections at MaxConns; extra ones wait in the
-// kernel backlog instead of costing a goroutine and a TLS handshake.
+// Listener caps concurrent connections at MaxConns, and at MaxConnsPerIP from
+// one address; extra ones wait in the kernel backlog (or, over the per-IP
+// cap, are closed) instead of costing a goroutine and a TLS handshake.
 func (g *Gateway) Listener(ln net.Listener) net.Listener {
-	return &limitListener{Listener: ln, sem: make(chan struct{}, g.cfg.MaxConns)}
+	return &limitListener{Listener: ln, sem: make(chan struct{}, g.cfg.MaxConns),
+		perIP: g.cfg.MaxConnsPerIP, byIP: map[string]int{}}
+}
+
+// LimitListener caps concurrent connections without a per-IP limit, for a
+// listener whose peers are all one proxy (the tunnel's plain-HTTP side).
+func LimitListener(ln net.Listener, n int) net.Listener {
+	return &limitListener{Listener: ln, sem: make(chan struct{}, n)}
 }
 
 type limitListener struct {
 	net.Listener
-	sem chan struct{}
+	sem   chan struct{}
+	perIP int
+	mu    sync.Mutex
+	byIP  map[string]int
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
-	l.sem <- struct{}{}
-	c, err := l.Listener.Accept()
-	if err != nil {
-		<-l.sem
-		return nil, err
+	for {
+		l.sem <- struct{}{}
+		c, err := l.Listener.Accept()
+		if err != nil {
+			<-l.sem
+			return nil, err
+		}
+		if l.perIP == 0 {
+			return &limitConn{Conn: c, release: func() { <-l.sem }}, nil
+		}
+		key := ipKey(hostOf(c.RemoteAddr().String()))
+		l.mu.Lock()
+		over := l.byIP[key] >= l.perIP
+		if !over {
+			l.byIP[key]++
+		}
+		l.mu.Unlock()
+		if over {
+			c.Close()
+			<-l.sem
+			continue
+		}
+		return &limitConn{Conn: c, release: func() {
+			l.mu.Lock()
+			if l.byIP[key]--; l.byIP[key] <= 0 {
+				delete(l.byIP, key)
+			}
+			l.mu.Unlock()
+			<-l.sem
+		}}, nil
 	}
-	return &limitConn{Conn: c, release: func() { <-l.sem }}, nil
 }
 
 type limitConn struct {
@@ -195,6 +234,8 @@ type failLimiter struct {
 	m      map[string]*failBucket
 }
 
+const maxFailEntries = 10000
+
 type failBucket struct {
 	n     int
 	reset time.Time
@@ -204,7 +245,31 @@ func newFailLimiter(limit int, window time.Duration) *failLimiter {
 	return &failLimiter{limit: limit, window: window, m: map[string]*failBucket{}}
 }
 
+// hostOf strips the port from host:port.
+func hostOf(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
+}
+
+// ipKey groups IPv6 addresses by /64, which one client usually owns whole,
+// so rotating through its addresses doesn't escape the limits.
+func ipKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		p, _ := a.Prefix(64)
+		return p.String()
+	}
+	return a.String()
+}
+
 func (f *failLimiter) blocked(ip string) bool {
+	ip = ipKey(ip)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	b := f.m[ip]
@@ -212,14 +277,22 @@ func (f *failLimiter) blocked(ip string) bool {
 }
 
 func (f *failLimiter) fail(ip string) {
+	ip = ipKey(ip)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := time.Now()
-	if len(f.m) > 10000 { // bound memory under a spray of source IPs
+	if len(f.m) >= maxFailEntries { // bound memory under a spray of source IPs
 		for k, b := range f.m {
 			if now.After(b.reset) {
 				delete(f.m, k)
 			}
+		}
+		// Still full: forget arbitrary entries (map order is random).
+		for k := range f.m {
+			if len(f.m) < maxFailEntries*9/10 {
+				break
+			}
+			delete(f.m, k)
 		}
 	}
 	b := f.m[ip]

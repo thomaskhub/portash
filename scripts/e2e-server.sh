@@ -72,6 +72,9 @@ printf 'echo hello-$((6*7))\nexit\n' | S eg_alice -tt >/dev/null 2>&1 || true
 sleep 0.5
 rec=$(ls "$T"/log/sessions/eg_alice/*.cast | head -1)
 grep -q 'hello-42' "$rec" && echo "recording $(basename "$rec") contains the session output" || fail "recording missing output"
+S eg_alice -tt 'echo forced-$((5*5))' >/dev/null 2>&1 </dev/null || true
+sleep 0.5
+grep -lq 'forced-25' "$T"/log/sessions/eg_alice/*.cast && echo "ssh -t host cmd is recorded too" || fail "ssh -t with a command was not recorded"
 
 echo "== sandboxed shell (bob)"
 S eg_bob 'touch ~/work/ok /tmp/ok && echo writes to ~/work and /tmp: ok'

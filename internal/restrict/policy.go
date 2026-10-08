@@ -40,13 +40,23 @@ var alwaysUnsafe = set("sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh"
 	"emacs", "ed", "less", "more", "most", "man", "python", "python2", "python3", "perl", "ruby",
 	"node", "php", "lua", "awk", "gawk", "mawk", "nawk", "find", "xargs", "script", "expect",
 	"ssh", "nsenter", "chroot", "unshare", "gdb", "strace", "ltrace", "crontab", "at", "watch",
-	"nice", "nohup", "timeout", "stdbuf", "setsid", "flock", "time", "socat", "nc", "ncat", "telnet")
+	"nice", "nohup", "timeout", "stdbuf", "setsid", "flock", "time", "socat", "nc", "ncat", "telnet",
+	"ash", "mksh", "rbash", "yash", "tclsh", "wish", "pwsh", "R", "Rscript", "julia", "irb", "jshell",
+	"deno", "bun", "taskset", "ionice", "chrt", "setpriv", "runuser", "machinectl", "sudoedit",
+	"firejail", "bwrap", "capsh", "systemd-nspawn", "ssh-agent", "openssl", "vipe", "rlwrap")
+
+// unsafePrefixes catch versioned interpreters (python3.12, perl5.36, lua5.4).
+var unsafePrefixes = []string{"python", "perl", "ruby", "lua", "php", "node", "tclsh", "pypy"}
 
 // unsafeWithWildcards are fine with fixed arguments (docker ps) but give
 // code execution once the user picks the arguments.
 var unsafeWithWildcards = set("docker", "podman", "kubectl", "git", "tar", "zip", "unzip",
 	"rsync", "scp", "sftp", "systemd-run", "tmux", "screen", "make", "npm", "pip", "apt", "apt-get",
 	"dnf", "yum", "cp", "mv", "tee", "dd", "install", "ln", "chmod", "chown", "sed", "curl", "wget")
+
+// wildSubcommand programs are fine with a fixed subcommand (systemctl status
+// ...) but not with a user-chosen one (systemctl edit, ip netns exec).
+var wildSubcommand = set("systemctl", "ip", "service")
 
 func set(names ...string) map[string]bool {
 	m := map[string]bool{}
@@ -60,8 +70,15 @@ func set(names ...string) map[string]bool {
 // overrides it for an admin who has checked the program.
 func lint(toks []string) error {
 	prog := path.Base(toks[0])
-	if alwaysUnsafe[prog] {
+	unsafe := alwaysUnsafe[prog]
+	for _, p := range unsafePrefixes {
+		unsafe = unsafe || strings.HasPrefix(prog, p)
+	}
+	if unsafe {
 		return fmt.Errorf("%s can start a shell or run code; refusing it (prefix the rule with !unsafe to override)", prog)
+	}
+	if wildSubcommand[prog] && len(toks) > 1 && (toks[1] == Rest || strings.ContainsAny(toks[1], "*?[")) {
+		return fmt.Errorf("%s with a user-chosen subcommand can run code; spell the subcommand out (or prefix the rule with !unsafe)", prog)
 	}
 	if unsafeWithWildcards[prog] {
 		for _, t := range toks[1:] {
@@ -234,8 +251,36 @@ func matchArg(pattern, arg string, deny bool) bool {
 	if !deny && strings.HasPrefix(arg, "-") && !strings.HasPrefix(pattern, "-") {
 		return false
 	}
+	if !deny && pattern != arg {
+		// A wildcard never stands for a ".." path segment, or for a hidden
+		// file unless the pattern itself starts that segment with a dot:
+		// /srv/app/* must not reach /srv/app/../etc or ~/.ssh.
+		for _, seg := range strings.Split(arg, "/") {
+			if seg == ".." {
+				return false
+			}
+		}
+		if hiddenNotInPattern(pattern, arg) {
+			return false
+		}
+	}
 	ok, _ := path.Match(pattern, arg)
 	return ok
+}
+
+// hiddenNotInPattern reports whether arg has a dot-led path segment that the
+// pattern's segment at the same position doesn't spell with a dot.
+func hiddenNotInPattern(pattern, arg string) bool {
+	ps, as := strings.Split(pattern, "/"), strings.Split(arg, "/")
+	for i, a := range as {
+		if !strings.HasPrefix(a, ".") || a == "." {
+			continue
+		}
+		if i >= len(ps) || !strings.HasPrefix(ps[i], ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r Rule) Match(args []string) bool {

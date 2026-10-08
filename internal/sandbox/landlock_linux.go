@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -108,6 +109,10 @@ func Restrict(writable []string) error {
 			return fmt.Errorf("allow %s: %w", p, err)
 		}
 	}
+	// Both calls below act on this OS thread only. Pin the calling goroutine
+	// to it for good, so whatever it execs or forks later starts from the
+	// restricted thread and not from another one the scheduler picked.
+	runtime.LockOSThread()
 	if _, _, e := syscall.RawSyscall(syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0); e != 0 {
 		return fmt.Errorf("prctl(NO_NEW_PRIVS): %v", e)
 	}

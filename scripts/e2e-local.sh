@@ -169,7 +169,7 @@ echo "== behind a TLS-terminating proxy (as Cloudflare Tunnel or Caddy), via the
 # Third "VM": the same localhost sshd, its gateway listening only for the tunnel.
 "$T/portash" token add laptop --device "$DEVICE" --ttl 1h --dir "$T/gw3" >"$T/token3" 2>/dev/null
 echo "$SECRET" | "$T/portash" totp import laptop --unlock --dir "$T/gw3"
-"$T/portash" gateway --dir "$T/gw3" --listen "" --tunnel-listen 127.0.0.1:8081 --tunnel-ip-header X-Real-IP \
+"$T/portash" gateway --dir "$T/gw3" --listen "" --tunnel-listen 127.0.0.1:8081 \
   --network 127.0.0.1/32 --ports 2224 --require-unlock 2>"$T/gw3.log" &
 # The "edge": terminates HTTPS with its own certificate (trusted by the laptop
 # like Cloudflare's) and passes the decrypted bytes to the tunnel listener.

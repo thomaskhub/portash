@@ -50,7 +50,8 @@ type Server struct {
 	LogDir string // audit.log and sessions/ live here
 	Log    *log.Logger
 
-	mu sync.Mutex
+	mu        sync.Mutex
+	recording map[int]int // open recordings per uid
 }
 
 // ListenAndServe serves until ctx is cancelled.
@@ -129,16 +130,25 @@ func (s *Server) handle(c *net.UnixConn) {
 		s.audit(name, uid, pid, "totp", result(err))
 		reply(c, err)
 	case "log":
-		s.audit(name, uid, pid, clean(req.Event, 32), clean(req.Detail, 4096))
-		reply(c, nil)
+		// Refuse if the line can't be written (disk full): the shell then
+		// refuses the session rather than running it unlogged.
+		reply(c, s.audit(name, uid, pid, clean(req.Event, 32), clean(req.Detail, 4096)))
 	case "record":
+		if !s.startRecording(uid) {
+			reply(c, fmt.Errorf("too many open recordings for %s", name))
+			return
+		}
+		defer s.endRecording(uid)
 		f, path, err := s.openRecording(name, pid, req.Detail)
 		if err != nil {
 			reply(c, err)
 			return
 		}
 		defer f.Close()
-		s.audit(name, uid, pid, "record", path)
+		if err := s.audit(name, uid, pid, "record", path); err != nil {
+			reply(c, err)
+			return
+		}
 		reply(c, nil)
 		c.SetReadDeadline(time.Time{})
 		// Unbuffered from here: everything the session prints, timestamped.
@@ -173,23 +183,54 @@ func clean(s string, n int) string {
 		return r
 	}, s)
 	if len(s) > n {
-		s = s[:n] + "..."
+		s = strings.ToValidUTF8(s[:n], "") + "..." // don't leave half a character
 	}
 	return s
 }
 
-func (s *Server) audit(name string, uid, pid int, event, detail string) {
+// maxRecordings caps concurrent recordings per user, so one local user can't
+// fill the disk with hundreds of 256 MiB casts at once.
+const maxRecordings = 8
+
+func (s *Server) startRecording(uid int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recording == nil {
+		s.recording = map[int]int{}
+	}
+	if s.recording[uid] >= maxRecordings {
+		return false
+	}
+	s.recording[uid]++
+	return true
+}
+
+func (s *Server) endRecording(uid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recording[uid]--; s.recording[uid] <= 0 {
+		delete(s.recording, uid)
+	}
+}
+
+// audit appends one line. user, uid and pid come from the kernel
+// (SO_PEERCRED); event and detail are what that user's process sent.
+func (s *Server) audit(name string, uid, pid int, event, detail string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	line := fmt.Sprintf("%s user=%s uid=%d pid=%d event=%s %s\n", time.Now().UTC().Format(time.RFC3339), name, uid, pid, event, detail)
-	f, err := os.OpenFile(filepath.Join(s.LogDir, "audit.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err == nil {
-		f.WriteString(line)
-		f.Close()
-	}
 	if s.Log != nil {
 		s.Log.Print(strings.TrimSpace(line))
 	}
+	f, err := os.OpenFile(filepath.Join(s.LogDir, "audit.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(line); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func (s *Server) openRecording(name string, pid int, detail string) (*os.File, string, error) {
