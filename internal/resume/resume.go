@@ -68,12 +68,11 @@ type Conn struct {
 	peerGone bool
 
 	// transport
-	t           net.Conn
-	gen         uint64
-	detachedAt  time.Time
-	dead        error // set once the session is over
-	done        chan struct{}
-	lastWallRun time.Time
+	t          net.Conn
+	gen        uint64
+	detachedAt time.Time
+	dead       error // set once the session is over
+	done       chan struct{}
 }
 
 func New(cfg Config) *Conn {

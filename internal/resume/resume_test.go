@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,10 +89,15 @@ func TestSurvivesRepeatedDrops(t *testing.T) {
 		data := make([]byte, size)
 		rand.Read(data)
 		go func() {
-			for p := data; len(p) > 0; {
+			// Paced, so the transfer outlasts at least five forced drops
+			// however fast the machine is.
+			for i, p := 0, data; len(p) > 0; i++ {
 				n := min(len(p), 7777)
 				c.Write(p[:n])
 				p = p[n:]
+				if i%4 == 3 {
+					time.Sleep(time.Millisecond)
+				}
 			}
 			c.CloseWrite()
 		}()
@@ -154,7 +160,7 @@ func TestDeadTransportDetected(t *testing.T) {
 	// Relay through a proxy we can freeze.
 	x, y := tcpPair(t)
 	p, q := tcpPair(t)
-	var frozen sync.Mutex
+	var frozen atomic.Bool
 	pump := func(dst, src net.Conn) {
 		buf := make([]byte, 4096)
 		for {
@@ -162,8 +168,9 @@ func TestDeadTransportDetected(t *testing.T) {
 			if err != nil {
 				return
 			}
-			frozen.Lock()
-			frozen.Unlock()
+			for frozen.Load() {
+				time.Sleep(time.Millisecond)
+			}
 			dst.Write(buf[:n])
 		}
 	}
@@ -177,8 +184,8 @@ func TestDeadTransportDetected(t *testing.T) {
 	if err := <-errc; err != nil {
 		t.Fatal(err)
 	}
-	frozen.Lock()
-	defer frozen.Unlock()
+	frozen.Store(true)
+	defer frozen.Store(false)
 	select {
 	case <-detached:
 	case <-time.After(3 * time.Second):

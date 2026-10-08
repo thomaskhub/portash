@@ -8,6 +8,20 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    # Newest Go on purpose: govulncheck then checks the standard library a
+    # release would be built with, and staticcheck needs a recent toolchain.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - run: staticcheck ./...
+      - run: govulncheck ./...
+
   test:
     runs-on: ubuntu-latest
     steps:
