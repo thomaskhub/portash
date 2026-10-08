@@ -337,15 +337,32 @@ printed link:
 portash totp enroll alice
 ```
 
-Put this first in `/etc/pam.d/sudo` (keep `@include common-auth` after it for
-password and code; remove it for code only), and set
-`Defaults timestamp_timeout=0` in sudoers to ask on every sudo:
+Then pick one of these for `/etc/pam.d/sudo`, and set
+`Defaults timestamp_timeout=0` in sudoers to ask on every sudo.
+
+**Code only** (the user needs no password):
 
 ```
 auth required pam_exec.so expose_authtok quiet /usr/local/bin/portash pam-totp
+account include common-account
+session include common-session-noninteractive
 ```
 
-Codes can't be reused, and 5 wrong codes lock the user for 15 minutes.
+**Password, then code** (sudo asks for the password, then shows a separate
+`TOTP code:` prompt):
+
+```
+@include common-auth
+auth required pam_exec.so quiet /usr/local/bin/portash pam-totp --tty
+account include common-account
+session include common-session-noninteractive
+```
+
+The code needs its own prompt because PAM hands the first answer to every
+module. `--tty` asks on the user's terminal, so it needs one: sudo without a
+terminal (a script over plain `ssh host cmd`) is refused. Codes can't be reused, and 5
+wrong codes lock the user for 15 minutes. Keep a root shell open while you
+change this file.
 
 ### Restricted keys (CI bots, contractors)
 
@@ -441,6 +458,7 @@ pins.txt                                  # public: one "hostname pin" line per 
 portash-secrets/people/tokens             # plain text
 portash-secrets/people/unlock/*.secret    # ansible-vault, id "people"
 portash-secrets/totp/devops.secret        # ansible-vault, id "people": sudo code for devops
+portash-secrets/sudo.yml                  # optional, ansible-vault: devops_password_hash
 portash-secrets/vms/vm1.example.com/      # ansible-vault, id "vm", a password per VM
     gateway.key  gateway.crt
     ssh_host_ed25519_key  ssh_host_ed25519_key.pub  ssh_host_ed25519_key-cert.pub
@@ -462,6 +480,11 @@ into the phones of everyone who may use sudo:
 portash totp enroll devops --totp-dir portash-secrets/totp      # prints otpauth://...
 ansible-vault encrypt --vault-id people@people.pass portash-secrets/totp/devops.secret
 ```
+
+To also ask for a password first, put its hash in a vault-encrypted
+`portash-secrets/sudo.yml` (`devops_password_hash: ...`, made with
+`openssl passwd -6`); the playbook then sets it and switches sudo to
+password, then code.
 
 If the phone or authd is ever unavailable, the way in is root on your cloud
 provider's console.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"portash/internal/authd"
 	"portash/internal/sandbox"
@@ -103,9 +105,19 @@ func cmdTOTP(args []string) error {
 //	auth required pam_exec.so expose_authtok quiet /usr/local/bin/portash pam-totp
 //
 // PAM puts the user name in PAM_USER and what they typed on stdin.
+//
+// For a password and a code, the code needs its own prompt: PAM hands the
+// first answer to every module, so pam_unix would get the code as the
+// password. With --tty (and without expose_authtok), after common-auth:
+//
+//	@include common-auth
+//	auth required pam_exec.so quiet /usr/local/bin/portash pam-totp --tty
+//
+// asks for the code on the user's terminal once the password was right.
 func cmdPAMTOTP(args []string) error {
 	fs := flag.NewFlagSet("pam-totp", flag.ContinueOnError)
 	dir := fs.String("totp-dir", defaultTOTPDir, "TOTP secrets (root only)")
+	tty := fs.Bool("tty", false, "ask for the code on the terminal instead of reading it from PAM")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -113,7 +125,28 @@ func cmdPAMTOTP(args []string) error {
 		return nil // only authentication is ours to decide
 	}
 	user := os.Getenv("PAM_USER")
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	in := io.Reader(os.Stdin)
+	if *tty {
+		// pam_exec starts us in a new session, so /dev/tty is gone; sudo
+		// names the user's terminal in PAM_TTY.
+		name := os.Getenv("PAM_TTY")
+		if !strings.HasPrefix(name, "/dev/") {
+			name = "/dev/" + name
+		}
+		if name == "/dev/" || strings.Contains(name, "..") {
+			return errors.New("no terminal to ask for the TOTP code on")
+		}
+		f, err := os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0)
+		if err != nil {
+			return errors.New("no terminal to ask for the TOTP code on")
+		}
+		defer f.Close()
+		fmt.Fprint(f, "TOTP code: ")
+		defer fmt.Fprint(f, "\n")
+		defer noEcho(f)()
+		in = f
+	}
+	line, _ := bufio.NewReader(in).ReadString('\n')
 	code := strings.TrimSpace(strings.TrimRight(line, "\x00"))
 	err := totp.Store{Dir: *dir}.Check(user, code)
 	if w, lerr := syslogWriter(); lerr == nil {
@@ -125,6 +158,19 @@ func cmdPAMTOTP(args []string) error {
 		w.Close()
 	}
 	return err
+}
+
+// noEcho hides what is typed on the terminal f and returns the undo.
+func noEcho(f *os.File) func() {
+	var t syscall.Termios
+	fd := f.Fd()
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(&t))); e != 0 {
+		return func() {}
+	}
+	old := t
+	t.Lflag &^= syscall.ECHO
+	syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCSETS, uintptr(unsafe.Pointer(&t)))
+	return func() { syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCSETS, uintptr(unsafe.Pointer(&old))) }
 }
 
 // cmdShell is the ForceCommand for full (non-allowlisted) users. It records

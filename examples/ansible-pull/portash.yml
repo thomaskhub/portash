@@ -93,14 +93,32 @@
           devops ALL=(ALL) ALL
           Defaults:devops timestamp_timeout=0
 
-    # Code only: devops has no password. Root on the cloud console is the way
-    # in if authd or the phone is ever unavailable.
-    - name: sudo checks the TOTP code
+    # sudo asks for devops' password, then for a TOTP code on its own
+    # prompt. Set devops_password_hash (mkpasswd -m sha-512) in
+    # portash-secrets/sudo.yml, vault-encrypted with id "people". Without it,
+    # sudo asks for the code only. Root on the cloud console is the way in if
+    # the phone is ever unavailable.
+    - name: devops password for sudo
+      include_vars: { file: "{{ secrets }}/sudo.yml" }
+      no_log: true
+      failed_when: false
+
+    - name: Set devops' password
+      user: { name: devops, password: "{{ devops_password_hash }}" }
+      no_log: true
+      when: devops_password_hash is defined
+
+    - name: sudo checks the password and the TOTP code
       copy:
         dest: /etc/pam.d/sudo
         mode: "0644"
         content: |
+          {% if devops_password_hash is defined %}
+          @include common-auth
+          auth required pam_exec.so quiet /usr/local/bin/portash pam-totp --tty
+          {% else %}
           auth required pam_exec.so expose_authtok quiet /usr/local/bin/portash pam-totp
+          {% endif %}
           account include common-account
           session include common-session-noninteractive
 
