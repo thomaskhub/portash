@@ -138,8 +138,15 @@ portash ssh-config >> ~/.ssh/config                  # one Host block per VM
 echo "@cert-authority *.example.com $(cat host_ca.pub)" >> ~/.ssh/known_hosts
 ```
 
-Add `User ubuntu` (or your login) under each `Host` block if your VM user
-differs from your laptop user. For a VM added later, run
+Add your login and SSH key under each `Host` block as with any ssh host:
+
+```
+    User ubuntu
+    IdentityFile ~/.ssh/id_ed25519_work
+    IdentitiesOnly yes
+```
+
+For a VM added later, run
 `portash ssh-config vm3.example.com >> ~/.ssh/config`.
 
 ## Usage
