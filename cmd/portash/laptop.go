@@ -142,7 +142,7 @@ func cmdLogin(args []string) error {
 	if len(pos) == 1 {
 		name = pos[0]
 	} else if len(pos) > 1 {
-		return errors.New("usage: portash login [NAME] [--gateway HOST:443] --pin sha256:...")
+		return errors.New("usage: portash login [NAME] [--gateway HOST:443] --pin sha256:PIN")
 	}
 	if !profileRe.MatchString(name) {
 		return errors.New("NAME must be lowercase letters, digits, '.', '_' or '-' (it becomes the ssh Host name)")
@@ -236,7 +236,7 @@ func cmdStatus() error {
 		return err
 	}
 	if len(c.Gateways) == 0 {
-		fmt.Fprintln(os.Stderr, "No gateways yet: portash login NAME --pin sha256:...")
+		fmt.Fprintln(os.Stderr, "No gateways yet: portash login NAME --pin sha256:PIN")
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -265,7 +265,7 @@ func cmdUnlock(ctx context.Context, args []string) error {
 		names = c.names()
 	}
 	if len(names) == 0 {
-		return errors.New("no gateways yet: portash login NAME --pin sha256:...")
+		return errors.New("no gateways yet: portash login NAME --pin sha256:PIN")
 	}
 	for _, n := range names {
 		if c.Gateways[n] == nil {
@@ -391,7 +391,7 @@ func cmdSSHConfig(args []string) error {
 		names = c.names()
 	}
 	if len(names) == 0 {
-		return errors.New("no gateways yet: portash login NAME --pin sha256:...")
+		return errors.New("no gateways yet: portash login NAME --pin sha256:PIN")
 	}
 	for _, n := range names {
 		p := c.Gateways[n]
