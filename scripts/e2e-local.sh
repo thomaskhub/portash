@@ -170,7 +170,7 @@ echo "== behind a TLS-terminating proxy (as Cloudflare Tunnel or Caddy), via the
 "$T/portash" token add laptop --device "$DEVICE" --ttl 1h --dir "$T/gw3" >"$T/token3" 2>/dev/null
 echo "$SECRET" | "$T/portash" totp import laptop --unlock --dir "$T/gw3"
 "$T/portash" gateway --dir "$T/gw3" --listen "" --tunnel-listen 127.0.0.1:8081 \
-  --network 127.0.0.1/32 --ports 2224 --require-unlock 2>"$T/gw3.log" &
+  --tunnel-ip-header X-Real-IP --network 127.0.0.1/32 --ports 2224 --require-unlock 2>"$T/gw3.log" &
 # The "edge": terminates HTTPS with its own certificate (trusted by the laptop
 # like Cloudflare's) and passes the decrypted bytes to the tunnel listener.
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=edge \
@@ -192,6 +192,15 @@ def serve(c):
     except OSError:
         return
     u = socket.create_connection(("127.0.0.1", 8081))
+    # Like Cloudflare: tell the gateway who the client is, in a header of the proxy's own.
+    head = b""
+    while b"\r\n\r\n" not in head:
+        d = t.recv(65536)
+        if not d:
+            return
+        head += d
+    line, rest = head.split(b"\r\n", 1)
+    u.sendall(line + b"\r\nX-Real-IP: 127.0.0.1\r\n" + rest)
     threading.Thread(target=pump, args=(t, u), daemon=True).start()
     pump(u, t)
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
