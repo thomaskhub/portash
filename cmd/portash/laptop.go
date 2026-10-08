@@ -297,13 +297,30 @@ func cmdUnlock(ctx context.Context, args []string) error {
 		p.Ticket, p.TicketExpires = t, exp
 		fmt.Fprintf(os.Stderr, "%s: unlocked until %s\n", n, exp.Local().Format("Mon 15:04"))
 	}
-	if err := saveConfig(c); err != nil {
+	// The network round trips above can take a while; re-read the file so a
+	// `portash login` made meanwhile isn't overwritten, and apply only the
+	// tickets we got.
+	fresh, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	mergeTickets(fresh, c)
+	if err := saveConfig(fresh); err != nil {
 		return err
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d gateways not unlocked", failed, len(names))
 	}
 	return nil
+}
+
+// mergeTickets copies newer tickets from src into dst, and nothing else.
+func mergeTickets(dst, src clientConfig) {
+	for n, p := range src.Gateways {
+		if f := dst.Gateways[n]; f != nil && p.Ticket != "" && p.TicketExpires.After(f.TicketExpires) {
+			f.Ticket, f.TicketExpires = p.Ticket, p.TicketExpires
+		}
+	}
 }
 
 func cmdDial(ctx context.Context, args []string) error {
