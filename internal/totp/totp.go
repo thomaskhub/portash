@@ -1,0 +1,251 @@
+// Package totp implements RFC 6238 time-based one-time codes (SHA-1, 6
+// digits, 30 s) and a per-user secret store with replay protection and
+// lockout. Secrets live in a root-only directory; only root processes (the
+// portash authd daemon and the PAM helper) ever read them.
+package totp
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha1"
+	"crypto/subtle"
+	"encoding/base32"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const (
+	Period   = 30
+	Digits   = 6
+	Skew     = 1 // accept one step either side for clock drift
+	MaxFails = 5
+	Lockout  = 15 * time.Minute
+)
+
+var (
+	ErrNoSecret = errors.New("no TOTP enrolled for this user")
+	ErrLocked   = errors.New("too many wrong codes; locked for 15 minutes")
+	ErrInvalid  = errors.New("wrong or reused code")
+	userRe      = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
+	codeRe      = regexp.MustCompile(`^[0-9]{6}$`)
+	b32         = base32.StdEncoding.WithPadding(base32.NoPadding)
+)
+
+// Code returns the code for secret at time step.
+func Code(secret []byte, step int64) string {
+	var msg [8]byte
+	binary.BigEndian.PutUint64(msg[:], uint64(step))
+	m := hmac.New(sha1.New, secret)
+	m.Write(msg[:])
+	sum := m.Sum(nil)
+	off := sum[len(sum)-1] & 0x0f
+	v := binary.BigEndian.Uint32(sum[off:off+4]) & 0x7fffffff
+	return fmt.Sprintf("%06d", v%1000000)
+}
+
+func Step(t time.Time) int64 { return t.Unix() / Period }
+
+// Match returns the step a code is valid for, checking every step in the
+// window (constant work regardless of which one matches).
+func Match(secret []byte, code string, now time.Time) (int64, bool) {
+	if !codeRe.MatchString(code) {
+		return 0, false
+	}
+	cur := Step(now)
+	var found int64
+	ok := false
+	for s := cur - Skew; s <= cur+Skew; s++ {
+		if subtle.ConstantTimeCompare([]byte(Code(secret, s)), []byte(code)) == 1 {
+			found, ok = s, true
+		}
+	}
+	return found, ok
+}
+
+func ValidUser(u string) bool { return userRe.MatchString(u) }
+
+// Store keeps one secret and one state file per user in Dir (mode 0700).
+type Store struct {
+	Dir string
+	Now func() time.Time
+	// ValidName checks names used as file names (default ValidUser).
+	ValidName func(string) bool
+}
+
+type state struct {
+	LastStep    int64     `json:"lastStep"`
+	Fails       int       `json:"fails"`
+	LockedUntil time.Time `json:"lockedUntil"`
+}
+
+func (s Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+func (s Store) path(user, ext string) (string, error) {
+	valid := s.ValidName
+	if valid == nil {
+		valid = ValidUser
+	}
+	if !valid(user) || strings.ContainsAny(user, "/\\") || strings.Trim(user, ".") == "" {
+		return "", fmt.Errorf("invalid user name %q", user)
+	}
+	return filepath.Join(s.Dir, user+ext), nil
+}
+
+// Enroll creates (or replaces) a user's secret and returns an otpauth:// URI
+// for authenticator apps.
+func (s Store) Enroll(user, issuer string) (string, error) {
+	p, err := s.path(user, ".secret")
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(s.Dir, 0o700); err != nil {
+		return "", err
+	}
+	secret := make([]byte, 20)
+	if _, err := rand.Read(secret); err != nil {
+		return "", err
+	}
+	enc := b32.EncodeToString(secret)
+	if err := s.write(p, user, enc); err != nil {
+		return "", err
+	}
+	label := url.PathEscape(issuer + ":" + user)
+	q := url.Values{"secret": {enc}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
+	return "otpauth://totp/" + label + "?" + q.Encode(), nil
+}
+
+// Import stores an existing secret (base32, or an otpauth:// URI), so one
+// authenticator entry can unlock several machines.
+func (s Store) Import(user, secret string) error {
+	secret = strings.TrimSpace(secret)
+	if u, err := url.Parse(secret); err == nil && u.Scheme == "otpauth" {
+		secret = u.Query().Get("secret")
+	}
+	secret = strings.ToUpper(strings.ReplaceAll(secret, " ", ""))
+	if raw, err := b32.DecodeString(strings.TrimRight(secret, "=")); err != nil || len(raw) < 16 {
+		return errors.New("not a base32 TOTP secret of at least 128 bits")
+	}
+	p, err := s.path(user, ".secret")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(s.Dir, 0o700); err != nil {
+		return err
+	}
+	return s.write(p, user, strings.TrimRight(secret, "="))
+}
+
+func (s Store) write(p, user, enc string) error {
+	if err := os.WriteFile(p, []byte(enc+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(p, 0o600); err != nil {
+		return err
+	}
+	sp, _ := s.path(user, ".state")
+	os.Remove(sp)
+	return nil
+}
+
+func (s Store) Remove(user string) error {
+	p, err := s.path(user, ".secret")
+	if err != nil {
+		return err
+	}
+	sp, _ := s.path(user, ".state")
+	os.Remove(sp)
+	return os.Remove(p)
+}
+
+func (s Store) secret(user string) ([]byte, error) {
+	p, err := s.path(user, ".secret")
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoSecret
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || fi.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%s must be mode 0600", p)
+	}
+	var buf [128]byte
+	n, _ := f.Read(buf[:])
+	return b32.DecodeString(strings.ToUpper(strings.TrimSpace(string(buf[:n]))))
+}
+
+// Check verifies a code for user. It refuses codes from a step that was
+// already used (replay) and locks the user after MaxFails wrong codes. The
+// state file is locked so concurrent checks (authd and PAM) can't race.
+func (s Store) Check(user, code string) error {
+	secret, err := s.secret(user)
+	if err != nil {
+		return err
+	}
+	sp, _ := s.path(user, ".state")
+	f, err := os.OpenFile(sp, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	unlock, err := lockFile(f)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	var st state
+	if b, _ := os.ReadFile(sp); len(b) > 0 {
+		if err := json.Unmarshal(b, &st); err != nil {
+			return fmt.Errorf("%s is corrupt", sp)
+		}
+	}
+	now := s.now()
+	if now.Before(st.LockedUntil) {
+		return ErrLocked
+	}
+	step, ok := Match(secret, code, now)
+	if ok && step > st.LastStep {
+		st.LastStep, st.Fails = step, 0
+		return writeState(f, st)
+	}
+	st.Fails++
+	if st.Fails >= MaxFails {
+		st.Fails, st.LockedUntil = 0, now.Add(Lockout)
+	}
+	if err := writeState(f, st); err != nil {
+		return err
+	}
+	return ErrInvalid
+}
+
+func writeState(f *os.File, st state) error {
+	b, _ := json.Marshal(st)
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	_, err := f.WriteAt(b, 0)
+	return err
+}

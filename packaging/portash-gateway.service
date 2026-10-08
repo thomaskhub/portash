@@ -1,0 +1,29 @@
+[Unit]
+Description=portash gateway (SSH over TLS :443 into the Vabbit VPN)
+After=network-online.target vabbit@vb0.service
+Wants=network-online.target
+
+[Service]
+# Set --network to your Vabbit NETWORK_CIDR.
+ExecStart=/usr/local/bin/portash gateway --network 100.92.0.0/16 --listen :443 --dir /var/lib/portash
+Restart=on-failure
+# Runs as root so `sudo portash token add` files are readable, but with every
+# capability except binding :443 removed.
+StateDirectory=portash
+StateDirectoryMode=0700
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/portash
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
