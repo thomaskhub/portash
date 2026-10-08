@@ -36,19 +36,19 @@ What happens then:
 
 ```mermaid
 flowchart LR
-    subgraph laptop[Laptop]
-        ssh[ssh] <-->|pipe| dial[portash dial]
+    subgraph laptop["Laptop"]
+        ssh["ssh"] <-->|"pipe"| dial["portash dial"]
     end
-    subgraph cf[Cloudflare]
-        edge[edge]
+    subgraph cf["Cloudflare"]
+        edge["edge"]
     end
-    subgraph vm[VM: no inbound ports]
-        cfd[cloudflared] <-->|127.0.0.1:8080| gw[portash gateway]
-        gw <-->|127.0.0.1:22| sshd[sshd]
+    subgraph vm["VM: no inbound ports"]
+        cfd["cloudflared"] <-->|"127.0.0.1:8080"| gw["portash gateway"]
+        gw <-->|"127.0.0.1:22"| sshd["sshd"]
     end
-    dial <-->|HTTPS :443| edge
-    edge <-->|tunnel, dialled out by the VM| cfd
-    dial -. pinned TLS 1.3 inside, end to end .- gw
+    dial <-->|"HTTPS :443"| edge
+    edge <-->|"tunnel, dialled out by the VM"| cfd
+    dial -.-|"pinned TLS 1.3, end to end"| gw
 ```
 
 * `cloudflared` on the VM keeps an outbound connection to Cloudflare, so
