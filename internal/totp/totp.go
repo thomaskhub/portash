@@ -198,54 +198,79 @@ func (s Store) secret(user string) ([]byte, error) {
 }
 
 // Check verifies a code for user. It refuses codes from a step that was
-// already used (replay) and locks the user after MaxFails wrong codes. The
-// state file is locked so concurrent checks (authd and PAM) can't race.
+// already used (replay) and locks the user after MaxFails wrong codes. A
+// separate lock file serializes concurrent checks (authd and PAM); the state
+// file itself is replaced atomically, so a crash can't leave it half written.
 func (s Store) Check(user, code string) error {
 	secret, err := s.secret(user)
 	if err != nil {
 		return err
 	}
 	sp, _ := s.path(user, ".state")
-	f, err := os.OpenFile(sp, os.O_RDWR|os.O_CREATE, 0o600)
+	lp, _ := s.path(user, ".lock")
+	lf, err := os.OpenFile(lp, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	unlock, err := lockFile(f)
+	defer lf.Close()
+	unlock, err := lockFile(lf)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	now := s.now()
 	var st state
-	if b, _ := os.ReadFile(sp); len(b) > 0 {
+	if b, err := os.ReadFile(sp); err == nil && len(b) > 0 {
 		if err := json.Unmarshal(b, &st); err != nil {
-			return fmt.Errorf("%s is corrupt", sp)
+			// Unreadable state (the file was damaged by something other
+			// than us): don't let that open or permanently close the door.
+			// Lock for one lockout period; the next write replaces the file.
+			st = state{LockedUntil: now.Add(Lockout)}
+			if err := writeState(sp, st); err != nil {
+				return err
+			}
 		}
 	}
-	now := s.now()
 	if now.Before(st.LockedUntil) {
 		return ErrLocked
 	}
 	step, ok := Match(secret, code, now)
 	if ok && step > st.LastStep {
 		st.LastStep, st.Fails = step, 0
-		return writeState(f, st)
+		return writeState(sp, st)
 	}
 	st.Fails++
 	if st.Fails >= MaxFails {
 		st.Fails, st.LockedUntil = 0, now.Add(Lockout)
 	}
-	if err := writeState(f, st); err != nil {
+	if err := writeState(sp, st); err != nil {
 		return err
 	}
 	return ErrInvalid
 }
 
-func writeState(f *os.File, st state) error {
+// writeState replaces the state file atomically (temp file, fsync, rename).
+func writeState(path string, st state) error {
 	b, _ := json.Marshal(st)
-	if err := f.Truncate(0); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".state-*")
+	if err != nil {
 		return err
 	}
-	_, err := f.WriteAt(b, 0)
-	return err
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

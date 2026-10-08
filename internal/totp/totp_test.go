@@ -2,6 +2,10 @@ package totp
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -50,5 +54,56 @@ func TestStoreReplayAndLockout(t *testing.T) {
 	}
 	if err := s.Check("../etc", "123456"); err == nil {
 		t.Fatal("path traversal user accepted")
+	}
+}
+
+// A damaged state file (not written by us: writes are atomic) must neither
+// open the door nor close it for good.
+func TestCorruptStateHealsAfterLockout(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	dir := t.TempDir()
+	s := Store{Dir: dir, Now: func() time.Time { return now }}
+	if _, err := s.Enroll("alice", "portash"); err != nil {
+		t.Fatal(err)
+	}
+	sec, _ := s.secret("alice")
+	if err := os.WriteFile(filepath.Join(dir, "alice.state"), []byte(`{"lastSt`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Check("alice", Code(sec, Step(now))); !errors.Is(err, ErrLocked) {
+		t.Fatalf("want lockout on a damaged state file, got %v", err)
+	}
+	now = now.Add(Lockout / 2)
+	if err := s.Check("alice", Code(sec, Step(now))); !errors.Is(err, ErrLocked) {
+		t.Fatalf("lockout must not restart on every check: %v", err)
+	}
+	now = now.Add(Lockout)
+	if err := s.Check("alice", Code(sec, Step(now))); err != nil {
+		t.Fatalf("did not heal after the lockout: %v", err)
+	}
+}
+
+func TestConcurrentChecksUseEachCodeOnce(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	s := Store{Dir: t.TempDir(), Now: func() time.Time { return now }}
+	if _, err := s.Enroll("alice", "portash"); err != nil {
+		t.Fatal(err)
+	}
+	sec, _ := s.secret("alice")
+	code := Code(sec, Step(now))
+	var wg sync.WaitGroup
+	var ok atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s.Check("alice", code) == nil {
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok.Load() != 1 {
+		t.Fatalf("one code was accepted %d times", ok.Load())
 	}
 }
