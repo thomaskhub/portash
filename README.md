@@ -428,7 +428,8 @@ and Traefik). Log laptops in with `--gateway https://vm1.example.com` as above.
 `--tunnel-ip-header` must name a header your proxy always sets itself,
 overwriting whatever the client sent; otherwise clients can fake their address
 to dodge the lockout or get someone else locked out. Connections without the
-header are refused.
+header are refused. `--tunnel-listen` requires `--tunnel-ip-header` and a
+loopback address (`--tunnel-allow-non-loopback` overrides the second check).
 
 | Proxy | Header to use | Proxy setting |
 | --- | --- | --- |
