@@ -1,4 +1,4 @@
-.PHONY: build test e2e
+.PHONY: build test e2e sbom
 
 build:
 	go build -trimpath -ldflags "-s -w" -o dist/portash ./cmd/portash
@@ -8,3 +8,6 @@ test:
 
 e2e:
 	sudo ./scripts/e2e-local.sh
+
+sbom:
+	./scripts/sbom.sh

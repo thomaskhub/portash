@@ -262,7 +262,10 @@ adding them gives file access to everything the user can read.
 make test        # unit tests: auth, device binding, expiry, pinning, limits, revocation, command policy, resume across drops
 make e2e         # real sshd/ssh/scp: host CA, stolen token, restricted keys, network drop, revocation (needs openssh, root)
 sudo ./scripts/e2e-server.sh   # TOTP sudo, recording, sandbox, TOTP rules; creates users, edits PAM: throwaway VM only
+make sbom        # regenerate the CycloneDX SBOM and the dependency report in sbom/
 ```
+
+CI runs all of these on every push, and fails if `sbom/` is out of date.
 
 ## Status
 
@@ -270,3 +273,8 @@ Prototype. Done: per-VM gateway, audit phase 1 hardening, roles with TOTP,
 sandbox and recording, session resume, daily TOTP unlock, one gateway per VM.
 Not yet: relay mode, device keys in the OS keychain,
 signed releases.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Dependencies and their licenses are listed in
+[sbom/](sbom/README.md): none besides the Go standard library.
