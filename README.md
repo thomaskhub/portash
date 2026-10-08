@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/logo.svg" width="160" alt="portash logo"></p>
+<p align="center"><img src="docs/brand/portash-logo.svg" width="280" alt="portash: HTTP 443 SSH forwarder"></p>
 
 # portash
 
