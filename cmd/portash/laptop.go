@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -377,11 +378,31 @@ const sshCommon = `    # portash dial reconnects by itself for up to 10 minutes;
     PasswordAuthentication no
 `
 
+// quoteExe makes the program path safe to put at the start of a ProxyCommand
+// line, which ssh hands to a shell (sh -c, or cmd.exe on Windows). A path with
+// a space, such as C:\Program Files\portash\portash.exe, would otherwise be
+// split. Double quotes work for both shells; characters the Unix shell would
+// still expand inside them are escaped.
+func quoteExe(exe string) string {
+	if runtime.GOOS == "windows" {
+		// Backslashes are path separators here.
+		if !strings.ContainsAny(exe, " \t&|;<>()^%!") {
+			return exe
+		}
+		return `"` + exe + `"`
+	}
+	if !strings.ContainsAny(exe, " \t\\\"'$`&|;<>()*?[]{}!#~") {
+		return exe
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`").Replace(exe) + `"`
+}
+
 func cmdSSHConfig(args []string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "portash"
 	}
+	exe = quoteExe(exe)
 	c, err := loadConfig()
 	if err != nil {
 		return err
