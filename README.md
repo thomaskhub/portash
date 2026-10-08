@@ -440,6 +440,7 @@ files/devops_authorized_keys              # one line per laptop, for the shared 
 pins.txt                                  # public: one "hostname pin" line per VM
 portash-secrets/people/tokens             # plain text
 portash-secrets/people/unlock/*.secret    # ansible-vault, id "people"
+portash-secrets/totp/devops.secret        # ansible-vault, id "people": sudo code for devops
 portash-secrets/vms/vm1.example.com/      # ansible-vault, id "vm", a password per VM
     gateway.key  gateway.crt
     ssh_host_ed25519_key  ssh_host_ed25519_key.pub  ssh_host_ed25519_key-cert.pub
@@ -452,6 +453,18 @@ portash-secrets/vms/vm1.example.com/      # ansible-vault, id "vm", a password p
 ssh-keygen -t ed25519 -f host_ca                     # SSH host CA; keep it offline
 openssl rand -base64 32 > people.pass                # vault password for the people files
 ```
+
+The playbook gives the `devops` account sudo that asks for a TOTP code
+every time (and no password). Make its secret once and scan the printed link
+into the phones of everyone who may use sudo:
+
+```sh
+portash totp enroll devops --totp-dir portash-secrets/totp      # prints otpauth://...
+ansible-vault encrypt --vault-id people@people.pass portash-secrets/totp/devops.secret
+```
+
+If the phone or authd is ever unavailable, the way in is root on your cloud
+provider's console.
 
 Keep `host_ca` and every `.pass` file out of the repository (add `*.pass`
 and `host_ca` to `.gitignore`) and in your password manager.

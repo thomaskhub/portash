@@ -30,7 +30,7 @@
     # machine before this VM existed (so its pin is already known).
     - name: portash state folder
       file: { path: "{{ item }}", state: directory, owner: root, group: root, mode: "0700" }
-      loop: [/var/lib/portash, /var/lib/portash/unlock]
+      loop: [/var/lib/portash, /var/lib/portash/unlock, /var/lib/portash/totp]
 
     - name: Gateway key and certificate (one pair per VM)
       copy: { src: "{{ vm_dir }}/{{ item.f }}", dest: "/var/lib/portash/{{ item.f }}", owner: root, group: root, mode: "{{ item.m }}" }
@@ -78,6 +78,31 @@
 
     - name: devops keys (one per laptop)
       copy: { src: "{{ playbook_dir }}/files/devops_authorized_keys", dest: /home/devops/.ssh/authorized_keys, owner: devops, group: devops, mode: "0600" }
+
+    # sudo asks for a TOTP code, every time (README, "TOTP sudo"). The secret
+    # was made with: portash totp enroll devops --totp-dir portash-secrets/totp
+    - name: sudo TOTP secret for devops
+      copy: { src: "{{ secrets }}/totp/devops.secret", dest: /var/lib/portash/totp/devops.secret, owner: root, group: root, mode: "0600" }
+
+    - name: devops may sudo, with a code each time
+      copy:
+        dest: /etc/sudoers.d/portash-devops
+        mode: "0440"
+        validate: visudo -cf %s
+        content: |
+          devops ALL=(ALL) ALL
+          Defaults:devops timestamp_timeout=0
+
+    # Code only: devops has no password. Root on the cloud console is the way
+    # in if authd or the phone is ever unavailable.
+    - name: sudo checks the TOTP code
+      copy:
+        dest: /etc/pam.d/sudo
+        mode: "0644"
+        content: |
+          auth required pam_exec.so expose_authtok quiet /usr/local/bin/portash pam-totp
+          account include common-account
+          session include common-session-noninteractive
 
     # Copies of packaging/*.service from the portash repository.
     - name: systemd units
