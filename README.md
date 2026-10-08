@@ -4,17 +4,20 @@
 
 *Porta* is Italian for door: portash is a door to your shells.
 
-SSH to your VMs from anywhere, with port 22 closed to the internet. It works
-on hotel Wi-Fi that blocks everything but HTTPS, survives laptop sleep and
-network changes, and adds the controls OpenSSH lacks: a daily TOTP unlock,
-TOTP sudo, recorded and sandboxed shells, and command allowlists. One small Go
-binary, no third-party dependencies, MIT licensed.
+SSH to your VMs from anywhere, with no SSH port open to the internet. The
+recommended setup runs through a free [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/):
+the VM needs no public IP and no open port, and Cloudflare takes care of the
+hostname and the certificate. It works on hotel Wi-Fi that blocks everything
+but HTTPS, survives laptop sleep and network changes, and adds the controls
+OpenSSH lacks: a daily TOTP unlock, TOTP sudo, recorded and sandboxed shells,
+and command allowlists. One small Go binary, no third-party dependencies, MIT
+licensed.
 
 - [How it works](#how-it-works)
 - [Installation](#installation): the VM, then each laptop
 - [Usage](#usage): a normal day, file copies, VS Code, Ansible
 - [Managing access](#managing-access): people, roles, sudo, restricted keys, logs
-- [Optional: with a Vabbit VPN](#optional-with-a-vabbit-vpn)
+- [Without Cloudflare](#without-cloudflare): direct port 443, Caddy, Traefik, nginx, Vabbit VPN
 - [Reference](#reference), [Develop](#develop), [License](#license)
 
 ## How it works
@@ -32,29 +35,34 @@ Host vm1.example.com
 What happens then:
 
 ```
- laptop                                     VM
-+-----+   pipe   +--------------+  HTTPS   +-----------------+  local  +------+
-| ssh | <------> | portash dial | <======> | portash gateway | <-----> | sshd |
-+-----+          +--------------+ TCP 443  +-----------------+ :22 on  +------+
-                                  TLS 1.3                   127.0.0.1
+ laptop                              Cloudflare            VM
++-----+  pipe  +--------------+ HTTPS +--------+  tunnel  +-------------+       +---------+       +------+
+| ssh | <----> | portash dial | <===> |  edge  | <======> | cloudflared | <---> | portash | <---> | sshd |
++-----+        +--------------+  :443 +--------+          +-------------+ :8080 | gateway |  :22  +------+
+                      |                                                         +---------+
+                      +---------- pinned TLS 1.3 inside, end to end ---------------+
 ```
 
-* Each VM runs `portash gateway` on port 443. It only ever forwards to that
-  VM's own sshd, which listens on localhost. Port 22 stays closed.
+* `cloudflared` on the VM keeps an outbound connection to Cloudflare, so
+  nothing on the VM accepts connections from the internet. sshd and the
+  gateway only listen on localhost.
 * On the laptop, `portash dial` is OpenSSH's `ProxyCommand`, so `ssh`, `scp`,
-  `rsync`, Ansible and VS Code Remote work unchanged. SSH stays encrypted end
-  to end inside the TLS connection.
+  `rsync`, Ansible and VS Code Remote work unchanged.
+* Inside the Cloudflare connection, `portash dial` and the gateway run their
+  own TLS 1.3, pinned to the gateway's key, and SSH runs inside that.
+  Cloudflare only ever sees encrypted bytes and can't impersonate the VM.
 * To get in, a laptop needs its token (bound to that laptop's device key, so a
   copied token is useless), a daily TOTP unlock, and then a normal SSH key.
 * After login, `portash shell` and `portash restrict` decide what the session
   may do; `portash authd` checks TOTP codes and writes the audit log and
   recordings as root.
 
-There is no shared server in the middle: one hacked VM doesn't open the others.
+Each VM has its own gateway: one hacked VM doesn't open the others.
 
 ## Installation
 
-You install portash once on each VM, and once on each laptop.
+You need a domain on Cloudflare (the free plan is enough). Then install
+portash once on each VM, and once on each laptop.
 
 ### Get the binary
 
@@ -73,7 +81,8 @@ artifact on the Actions page).
 ### On each VM (Linux)
 
 Do this as root on every VM, with a second way in (the cloud console) until
-you have tested it.
+you have tested it. The examples use `vm1.example.com`; pick one hostname per
+VM.
 
 **1. Install portash and keep sshd on localhost.**
 
@@ -85,15 +94,14 @@ systemctl restart ssh
 ```
 
 **2. Create the gateway's TLS key and note its pin.** Laptops pin this key, so
-no certificate authority is needed:
+nobody in between, Cloudflare included, can pretend to be the gateway:
 
 ```sh
 portash fingerprint --dir /var/lib/portash      # prints sha256:...; send it to your users
 ```
 
 **3. Sign the VM's host key** with an SSH CA, so laptops never have to trust a
-host key on first sight (a compromised network could impersonate the VM). Use
-the name people will type, e.g. `vm1.example.com`:
+host key on first sight. Use the VM's hostname:
 
 ```sh
 # once, on an offline machine: ssh-keygen -t ed25519 -f host_ca
@@ -109,62 +117,50 @@ cp packaging/portash-authd.service /etc/systemd/system/
 systemctl enable --now portash-authd
 ```
 
-**5. Start the gateway**, then add people (see [Add a person](#add-a-person)).
-Until the first token exists, it lets nobody in.
+**5. Start the gateway.** The packaged service listens on `127.0.0.1:8080` for
+the tunnel. Until you [add a person](#add-a-person), it lets nobody in.
 
 ```sh
 cp packaging/portash-gateway.service /etc/systemd/system/
 systemctl enable --now portash-gateway
 ```
 
-**6. Open TCP 443 and close 22** in the cloud firewall. Or, with no open port
-and no public IP at all, use a Cloudflare Tunnel (next section).
+**6. Connect the Cloudflare Tunnel.** In the Cloudflare dashboard, go to
+Zero Trust, then Networks, then Tunnels, and create a tunnel (type
+Cloudflared) named after the VM. Run the install command it shows on the VM;
+that installs `cloudflared` as a service. Then add a public hostname:
 
-### Optional: Cloudflare Tunnel or a reverse proxy
+| Field | Value |
+| --- | --- |
+| Subdomain / Domain | `vm1` / `example.com` |
+| Service | `HTTP` / `127.0.0.1:8080` |
 
-Use this when the VM has no public IP, port 443 is already taken by a web
-server, or you don't want to handle certificates and DNS. The gateway then
-also listens on plain HTTP on localhost, and the tunnel or proxy forwards a
-WebSocket to it. portash still runs its own pinned TLS inside, so Cloudflare
-or the proxy only ever sees encrypted bytes, and a token still only works from
-its own laptop.
+Cloudflare creates the DNS record and the certificate. WebSockets are on by
+default; leave them on.
 
-Change the gateway's `ExecStart` in `/etc/systemd/system/portash-gateway.service`:
-
-```sh
-ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --dir /var/lib/portash --require-unlock \
-    --listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
-```
-
-(`--listen ""` turns the direct port off; keep `--listen :443` to have both.)
-
-**Cloudflare Tunnel.** In the Cloudflare dashboard, create a tunnel, install
-`cloudflared` on the VM with the command it shows, and add a public hostname,
-e.g. `vm1.example.com`, with service `http://127.0.0.1:8080`. Cloudflare
-creates the DNS record and the certificate. Nothing on the VM needs to accept
-inbound connections.
-
-**Caddy, Traefik or nginx** already on port 443: route a hostname to
-`127.0.0.1:8080` like any other site; WebSockets must be allowed (they are by
-default in Caddy and Traefik). Use `--tunnel-ip-header X-Real-IP` or
-`X-Forwarded-For` to match what your proxy sends.
-
-```
-# Caddyfile
-vm1.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
-
-Laptops then log in with the URL instead of a host name; everything else stays
-the same:
+<details>
+<summary>The same from the command line (for scripts and Ansible)</summary>
 
 ```sh
-portash login vm1.example.com --gateway https://vm1.example.com --pin sha256:...
+cloudflared tunnel login                         # once; opens a browser to pick the domain
+cloudflared tunnel create vm1                    # prints the tunnel ID
+cloudflared tunnel route dns vm1 vm1.example.com
+mkdir -p /etc/cloudflared
+cat > /etc/cloudflared/config.yml <<'YAML'
+tunnel: vm1
+credentials-file: /root/.cloudflared/TUNNEL-ID.json
+ingress:
+  - hostname: vm1.example.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404
+YAML
+cloudflared service install
 ```
 
-Keep the tunnel port on `127.0.0.1`: the IP header is trusted, so anyone who
-could reach that port directly could fake their address.
+</details>
+
+**7. Close every inbound port** in the cloud firewall, 22 included. The VM
+only needs outbound HTTPS.
 
 ### On each laptop (Linux or Windows; macOS builds but is untested)
 
@@ -176,14 +172,16 @@ portash device                  # once; prints pshd_..., send it to your admin
 
 Your admin gives you, per VM, its pin and a `psh_` token, plus a TOTP QR code
 or `otpauth://` link once. Scan that into any authenticator app. Then add each
-VM by the name in its host certificate:
+VM by its hostname:
 
 ```sh
-portash login vm1.example.com --pin sha256:...      # asks for the psh_ token
-portash login vm2.example.com --pin sha256:...
+portash login vm1.example.com --gateway https://vm1.example.com --pin sha256:...   # asks for the psh_ token
+portash login vm2.example.com --gateway https://vm2.example.com --pin sha256:...
 portash ssh-config >> ~/.ssh/config                  # one Host block per VM
 echo "@cert-authority *.example.com $(cat host_ca.pub)" >> ~/.ssh/known_hosts
 ```
+
+The laptop needs nothing from Cloudflare: no `cloudflared`, no account.
 
 Add your login and SSH key under each `Host` block as with any ssh host:
 
@@ -376,7 +374,42 @@ sees every command.
 Give laptops both pins (`portash login NAME --pin sha256:old,sha256:new`),
 switch the gateway's key, then drop the old pin.
 
-## Optional: with a Vabbit VPN
+## Without Cloudflare
+
+The gateway works the same behind other proxies, and it can also take
+connections directly.
+
+### Direct on port 443
+
+For the lowest latency, or a VM with a public IP and nothing else on 443, the
+gateway can serve TLS itself. In `portash-gateway.service`, replace
+`--listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP`
+with `--listen :443` (or keep both), open TCP 443 in the firewall, and log
+laptops in with the host name instead of a URL:
+
+```sh
+portash login vm1.example.com --pin sha256:...
+```
+
+### Behind Caddy, Traefik or nginx
+
+If a web server already holds port 443, route a hostname to `127.0.0.1:8080`
+like any other site; WebSockets must be allowed (they are by default in Caddy
+and Traefik). Set `--tunnel-ip-header` to what your proxy sends, usually
+`X-Real-IP` or `X-Forwarded-For`, and log laptops in with
+`--gateway https://vm1.example.com` as above.
+
+```
+# Caddyfile
+vm1.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Keep the tunnel port on `127.0.0.1` in every setup: the gateway trusts the IP
+header, so anyone who could reach that port directly could fake their address.
+
+### With a Vabbit VPN
 
 If your VMs are on a Vabbit VPN, one gateway can serve all of them, and laptops
 go direct over WireGuard whenever UDP works:
