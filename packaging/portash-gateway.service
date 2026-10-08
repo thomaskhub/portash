@@ -1,11 +1,12 @@
 [Unit]
-Description=portash gateway (SSH over TLS :443 into the Vabbit VPN)
-After=network-online.target vabbit@vb0.service
+Description=portash gateway (SSH over TLS on :443)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Set --network to your Vabbit NETWORK_CIDR.
-ExecStart=/usr/local/bin/portash gateway --network 100.92.0.0/16 --listen :443 --dir /var/lib/portash
+# Per-VM mode: only this VM's own sshd on 127.0.0.1:22, daily TOTP unlock.
+# In front of a Vabbit VPN instead: --network <NETWORK_CIDR> (e.g. 100.92.0.0/16).
+ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --listen :443 --dir /var/lib/portash --require-unlock
 Restart=on-failure
 # Runs as root so `sudo portash token add` files are readable, but with every
 # capability except binding :443 removed.

@@ -218,6 +218,9 @@ func (s *Store) load() ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f, err := os.Open(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // no tokens yet: nobody gets in
+	}
 	if err != nil {
 		return nil, err
 	}
