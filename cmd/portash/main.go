@@ -40,7 +40,7 @@ const usage = `portash - a door to your shells: SSH over TLS on port 443
 
 Gateway (on each VM, or one host in front of a Vabbit VPN):
   portash gateway --network CIDR [--listen :443] [--ports 22] [--dir /var/lib/portash]
-          [--tunnel-listen 127.0.0.1:8080 [--tunnel-ip-header CF-Connecting-IP]]
+          --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
           [--cert FILE --key FILE] [--max-streams 16] [--max-conns 512]
           [--idle-timeout 10m] [--max-session 24h] [--resume-window 10m]
           [--require-unlock] [--ticket-ttl 12h]
@@ -160,7 +160,8 @@ func cmdGateway(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
 	listen := fs.String("listen", ":443", "address for direct TLS connections (\"\" = none)")
 	tunnelListen := fs.String("tunnel-listen", "", "plain-HTTP address for Cloudflare Tunnel or a reverse proxy (e.g. 127.0.0.1:8080)")
-	tunnelIP := fs.String("tunnel-ip-header", "", "header carrying the client's IP from the tunnel (CF-Connecting-IP, X-Real-IP)")
+	tunnelIP := fs.String("tunnel-ip-header", "", "header carrying the client's IP from the tunnel (CF-Connecting-IP, X-Real-IP); required with --tunnel-listen")
+	tunnelAny := fs.Bool("tunnel-allow-non-loopback", false, "let --tunnel-listen bind a non-loopback address (anyone who can reach it can forge the client IP)")
 	network := fs.String("network", "", "VPN CIDR targets must be in (e.g. 100.92.0.0/16)")
 	ports := fs.String("ports", "22", "comma-separated target ports allowed")
 	dir := fs.String("dir", "/var/lib/portash", "state directory (tokens, TLS key)")
@@ -174,6 +175,9 @@ func cmdGateway(ctx context.Context, args []string) error {
 	requireUnlock := fs.Bool("require-unlock", false, "every stream needs a ticket from `portash unlock` (a TOTP code once a day)")
 	ticketTTL := fs.Duration("ticket-ttl", 12*time.Hour, "how long an unlock lasts")
 	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	if err := checkTunnelFlags(*tunnelListen, *tunnelIP, *tunnelAny); err != nil {
 		return err
 	}
 	prefix, err := netip.ParsePrefix(*network)
@@ -255,6 +259,33 @@ func cmdGateway(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
+}
+
+// checkTunnelFlags refuses a tunnel listener the rate limits can't protect.
+// Without the proxy's client-IP header every client looks like the proxy, so
+// the fail limiter and per-IP caps are shared by everyone. On a non-loopback
+// address anyone can send that header themselves.
+func checkTunnelFlags(listen, ipHeader string, allowNonLoopback bool) error {
+	if listen == "" {
+		return nil
+	}
+	if ipHeader == "" {
+		return errors.New("--tunnel-listen needs --tunnel-ip-header (CF-Connecting-IP for Cloudflare, X-Real-IP for most proxies)")
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("--tunnel-listen: %w", err)
+	}
+	if allowNonLoopback {
+		return nil
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip, err := netip.ParseAddr(host); err != nil || !ip.IsLoopback() {
+		return errors.New("--tunnel-listen must be a loopback address such as 127.0.0.1:8080, because the client IP header can be forged by anyone who reaches it (override: --tunnel-allow-non-loopback)")
+	}
+	return nil
 }
 
 func loadCert(dir, certFile, keyFile string) (cert tls.Certificate, err error) {

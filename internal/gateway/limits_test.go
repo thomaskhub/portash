@@ -27,3 +27,16 @@ func TestFailLimiterIsBounded(t *testing.T) {
 		t.Fatalf("%d entries, want at most %d", len(f.m), maxFailEntries)
 	}
 }
+
+func TestFailLimiterIsPerIP(t *testing.T) {
+	f := newFailLimiter(3, time.Minute)
+	for range 3 {
+		f.fail("198.51.100.1")
+	}
+	if !f.blocked("198.51.100.1") {
+		t.Fatal("IP over the limit is not blocked")
+	}
+	if f.blocked("198.51.100.2") {
+		t.Fatal("another IP is blocked by someone else's failures")
+	}
+}
