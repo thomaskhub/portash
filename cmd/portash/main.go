@@ -81,7 +81,7 @@ Laptop:
           list gateways and how long they stay unlocked
   portash dial [--gateway NAME] [-v] [--direct-timeout 1.5s] [--no-resume] HOST PORT
           stdio bridge; use as ssh ProxyCommand
-  portash ssh-config [NAME...]
+  portash ssh-config [NAME...] | --write
           print ~/.ssh/config blocks for your gateways
 `
 

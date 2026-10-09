@@ -22,6 +22,7 @@ import (
 	"unsafe"
 
 	"portash/internal/authd"
+	"portash/internal/qr"
 	"portash/internal/sandbox"
 	"portash/internal/session"
 	"portash/internal/tokens"
@@ -97,7 +98,15 @@ func cmdTOTP(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Add this to %s's authenticator app (paste it, or make a QR code with `qrencode -t ansiutf8`):\n", pos[1])
+	// The QR code goes to the terminal only, so scripts that read the link
+	// from stdout get just the link.
+	if term(os.Stderr) {
+		if c, err := qr.Encode(uri); err == nil {
+			fmt.Fprintf(os.Stderr, "Scan this with %s's authenticator app:\n", pos[1])
+			c.WriteTerminal(os.Stderr)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Or paste the link into it:\n")
 	if *unlock {
 		fmt.Fprintf(os.Stderr, "To use the same entry on other VMs: echo 'URI' | sudo portash totp import %s --unlock\n", pos[1])
 	}

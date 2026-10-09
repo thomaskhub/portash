@@ -415,36 +415,60 @@ func quoteExe(exe string) string {
 }
 
 func cmdSSHConfig(args []string) error {
+	var names []string
+	write := false
+	for _, a := range args {
+		if a == "--write" || a == "-write" {
+			write = true
+		} else {
+			names = append(names, a)
+		}
+	}
+	c, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if write {
+		if len(names) > 0 {
+			return errors.New("--write always writes every gateway; leave out the names")
+		}
+		return writeSSHConfig(c)
+	}
+	if len(names) == 0 {
+		names = c.names()
+	}
+	text, err := sshConfigText(c, names)
+	if err != nil {
+		return err
+	}
+	fmt.Print(text)
+	return nil
+}
+
+func sshConfigText(c clientConfig, names []string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "portash"
 	}
 	exe = quoteExe(exe)
-	c, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	names := args
 	if len(names) == 0 {
-		names = c.names()
+		return "", errors.New("no gateways yet: portash login NAME --pin sha256:PIN")
 	}
-	if len(names) == 0 {
-		return errors.New("no gateways yet: portash login NAME --pin sha256:PIN")
-	}
+	var b strings.Builder
 	for _, n := range names {
 		p := c.Gateways[n]
 		if p == nil {
-			return fmt.Errorf("no gateway named %q", n)
+			return "", fmt.Errorf("no gateway named %q", n)
 		}
 		if p.Network == "" {
 			// Per-VM gateway: it only forwards to its own sshd on localhost.
 			// HostKeyAlias keeps each VM's host key apart even though they
 			// are all 127.0.0.1; sign host certificates with -n NAME.
-			fmt.Printf("Host %s\n    HostName 127.0.0.1\n    HostKeyAlias %s\n    ProxyCommand %s dial --gateway %s %%h %%p\n%s\n",
+			fmt.Fprintf(&b, "Host %s\n    HostName 127.0.0.1\n    HostKeyAlias %s\n    ProxyCommand %s dial --gateway %s %%h %%p\n%s\n",
 				n, n, exe, n, sshCommon)
 			continue
 		}
-		fmt.Printf(`# Gateway %q into the VPN %s: add one Host block per machine with its
+		fmt.Fprintf(&b, `# Gateway %q into the VPN %s: add one Host block per machine with its
 # VPN IP, e.g.
 #   Host myvm
 #       HostName 100.92.0.7
@@ -453,7 +477,80 @@ Host %s
 %s
 `, n, p.Network, vpnPattern(p.Network), exe, n, sshCommon)
 	}
+	return b.String(), nil
+}
+
+// writeSSHConfig keeps every gateway's Host block in ~/.ssh/portash.conf,
+// replaced on each run, and makes ~/.ssh/config include it once, at the top
+// (an Include further down would only apply inside the Host block above
+// it). Your own settings for a host (User, IdentityFile, ...) stay in
+// ~/.ssh/config, in a Host block of their own: ssh combines both.
+func writeSSHConfig(c clientConfig) error {
+	text, err := sshConfigText(c, c.names())
+	if err != nil {
+		return err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	const header = "# Written by `portash ssh-config --write`; changes here are overwritten.\n" +
+		"# Put your own settings (User, IdentityFile, ...) in ~/.ssh/config.\n\n"
+	if err := writeAtomic(filepath.Join(dir, "portash.conf"), []byte(header+text), 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Wrote %s (gateways: %d)\n", filepath.Join(dir, "portash.conf"), len(c.names()))
+
+	cfgPath := filepath.Join(dir, "config")
+	old, err := os.ReadFile(cfgPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if includesPortash(string(old)) {
+		return nil
+	}
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(cfgPath); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	nl := "\n"
+	if strings.Contains(string(old), "\r\n") {
+		nl = "\r\n"
+	}
+	inc := "# Host blocks for portash gateways (portash ssh-config --write)" + nl + "Include portash.conf" + nl + nl
+	if err := writeAtomic(cfgPath, append([]byte(inc), old...), mode); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Added \"Include portash.conf\" at the top of %s\n", cfgPath)
 	return nil
+}
+
+var includeRe = regexp.MustCompile(`(?im)^\s*include\s+.*portash\.conf\s*$`)
+
+func includesPortash(cfg string) bool { return includeRe.MatchString(cfg) }
+
+func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil && runtime.GOOS != "windows" {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // vpnPattern turns 100.92.0.0/16 into the ssh Host pattern 100.92.*.

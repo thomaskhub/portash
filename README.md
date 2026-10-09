@@ -240,26 +240,27 @@ VM by its hostname:
 ```sh
 portash login vm1.example.com --gateway https://vm1.example.com --pin sha256:...   # asks for the psh_ token
 portash login vm2.example.com --gateway https://vm2.example.com --pin sha256:...
-portash ssh-config >> ~/.ssh/config                  # one Host block per VM
+portash ssh-config --write                           # one Host block per VM, in ~/.ssh/portash.conf
 echo "@cert-authority *.example.com $(cat host_ca.pub)" >> ~/.ssh/known_hosts
 ```
 
 The laptop needs nothing from Cloudflare: no `cloudflared`, no account.
 
-On Windows, in PowerShell, `>>` writes UTF-16, which ssh can't read. Use
-`portash ssh-config | Out-File -Append -Encoding ascii $HOME\.ssh\config`
-instead.
+`--write` keeps the portash Host blocks in `~/.ssh/portash.conf`, rewritten
+on every run, and adds `Include portash.conf` once at the top of
+`~/.ssh/config`. Run it again whenever you log in to a new VM or remove one;
+it never duplicates anything. Without `--write`, `portash ssh-config [NAME...]`
+just prints the blocks.
 
-Add your login and SSH key under each `Host` block as with any ssh host:
+Put your login and SSH key in `~/.ssh/config` as with any ssh host, in a
+`Host` block of your own (ssh combines it with the one in `portash.conf`):
 
 ```
+Host vm1.example.com vm2.example.com
     User ubuntu
     IdentityFile ~/.ssh/id_ed25519_work
     IdentitiesOnly yes
 ```
-
-For a VM added later, run
-`portash ssh-config vm3.example.com >> ~/.ssh/config`.
 
 ## Usage
 
@@ -340,7 +341,7 @@ portash token add alice-laptop --device pshd_... --ttl 2160h --dir /var/lib/port
 # Trade-off: a VM taken over exposes that person's secret, so the attacker can
 # compute their unlock code for the other VMs (they still need that VM's token
 # and the laptop's device key). Never share one secret between people.
-portash totp enroll alice-laptop --unlock           # prints otpauth://..., give it to Alice once
+portash totp enroll alice-laptop --unlock           # shows a QR code and otpauth://..., give it to Alice once
 echo 'otpauth://...' | portash totp import alice-laptop --unlock     # on every other VM
 
 # their SSH key, with a role (below)
@@ -663,11 +664,11 @@ metadata service, and so can anyone with read access to your cloud console.
 ```sh
 portash device                                       # once; send pshd_... to the admin
 while read vm pin; do echo "$TOKEN" | portash login $vm --gateway https://$vm --pin $pin; done < pins.txt
-portash ssh-config >> ~/.ssh/config
+portash ssh-config --write
 ```
 
 with `TOKEN=psh_...` set first. For a VM added later, run its login line and
-`portash ssh-config NAME >> ~/.ssh/config`.
+`portash ssh-config --write` again.
 
 ### Remove a person
 
