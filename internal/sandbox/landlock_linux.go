@@ -79,13 +79,22 @@ func fileOnly(abi int) uint64 {
 // the one sshd allocated, stay unwritable so output can't skip the recording.
 var DefaultWritable = []string{"/tmp", "/var/tmp", "/dev/null", "/dev/tty", "/dev/zero", "/dev/full"}
 
+// MinABI is the oldest Landlock version Restrict accepts by default. Before
+// ABI 3 (Linux 6.2) truncate(2) is not covered, so a session could empty any
+// file its user may write.
+const MinABI = 3
+
 // Restrict confines the calling process to writing only beneath writable.
 // Paths that don't exist are skipped. It sets no_new_privs, so setuid
-// programs such as sudo stop working inside the sandbox.
-func Restrict(writable []string) error {
+// programs such as sudo stop working inside the sandbox. Kernels older than
+// minABI are refused.
+func Restrict(writable []string, minABI int) error {
 	abi := ABI()
 	if abi < 1 {
 		return errors.New("this kernel has no Landlock support (needs Linux 5.13+ with landlock in the LSM list)")
+	}
+	if abi < minABI {
+		return fmt.Errorf("this kernel's Landlock (ABI %d) can't stop truncating files; needs ABI %d (Linux 6.2+)", abi, minABI)
 	}
 	handled := writeAccess(abi)
 	attr := struct{ handledFS uint64 }{handled}
@@ -120,6 +129,20 @@ func Restrict(writable []string) error {
 		return fmt.Errorf("landlock_restrict_self: %v", e)
 	}
 	return nil
+}
+
+// UserManager returns the socket of a service manager running as uid
+// outside any sandbox (systemd --user, or a D-Bus session bus), or "". A
+// sandboxed session could ask it to start a process (systemd-run --user)
+// that the sandbox doesn't cover.
+func UserManager(uid int) string {
+	dir := fmt.Sprintf("/run/user/%d", uid)
+	for _, p := range []string{dir + "/systemd/private", dir + "/bus"} {
+		if fi, err := os.Stat(p); err == nil && fi.Mode()&os.ModeSocket != 0 {
+			return p
+		}
+	}
+	return ""
 }
 
 func addRule(ruleset int, path string, allowed uint64) error {

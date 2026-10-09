@@ -15,7 +15,7 @@ import (
 func TestMain(m *testing.M) {
 	if dir := os.Getenv("PORTASH_SANDBOX_CHILD"); dir != "" {
 		allowed, denied := filepath.Join(dir, "allowed"), filepath.Join(dir, "denied")
-		if err := Restrict([]string{allowed}); err != nil {
+		if err := Restrict([]string{allowed}, 1); err != nil {
 			os.Stdout.WriteString("restrict: " + err.Error())
 			os.Exit(2)
 		}

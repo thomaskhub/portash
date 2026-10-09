@@ -181,6 +181,8 @@ func noEcho(f *os.File) func() {
 func cmdShell(args []string) error {
 	fs := flag.NewFlagSet("shell", flag.ContinueOnError)
 	sb := fs.Bool("sandbox", false, "only allow writes beneath --write directories (Landlock); sudo stops working")
+	oldKernel := fs.Bool("allow-old-landlock", false, "with --sandbox: accept Landlock before ABI 3 (Linux 6.2), which can't stop truncating files")
+	userManager := fs.Bool("allow-user-manager", false, "with --sandbox: allow a session whose user has a systemd --user or D-Bus session manager, which can start processes outside the sandbox")
 	var writable multiFlag
 	fs.Var(&writable, "write", "directory the session may write to (repeatable; ~ is the user's home)")
 	record := fs.Bool("record", true, "record interactive sessions through portash authd")
@@ -202,12 +204,20 @@ func cmdShell(args []string) error {
 		// this goroutine on one thread from here on, so the restricted thread
 		// is the one that execs or forks the shell.
 		runtime.LockOSThread()
+		if sock := sandbox.UserManager(os.Getuid()); sock != "" && !*userManager {
+			fmt.Fprintf(os.Stderr, "portash: %s can start programs outside the sandbox; an admin must turn off the user manager for this account (README, Sandbox)\n", sock)
+			return errors.New("refusing a sandboxed session: user service manager running")
+		}
 	}
 	confine := func(extra ...string) error {
 		if !*sb {
 			return nil
 		}
-		if err := sandbox.Restrict(append(paths, extra...)); err != nil {
+		min := sandbox.MinABI
+		if *oldKernel {
+			min = 1
+		}
+		if err := sandbox.Restrict(append(paths, extra...), min); err != nil {
 			return fmt.Errorf("sandbox: %w", err)
 		}
 		return nil

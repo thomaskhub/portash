@@ -348,6 +348,22 @@ refuses writes outside the allowed directories, however the command is written
 (`r''m`, base64, a script, vim, python), and for everything the session starts.
 Reading is not restricted, and sudo is disabled inside it.
 
+Two things to set up for each Operator account, or its sessions are refused:
+
+* **Linux 6.2 or newer** (Landlock ABI 3; Ubuntu 22.04 needs the HWE kernel).
+  Older kernels can't stop a session from truncating files it can't
+  otherwise write. `--allow-old-landlock` accepts them anyway.
+* **No user service manager.** On most distributions every ssh login starts a
+  `systemd --user` manager for that account, and `systemd-run --user` asks it
+  to start programs outside the sandbox. Turn it off for the account (logins
+  keep working):
+
+  ```sh
+  systemctl mask user@$(id -u alice).service
+  ```
+
+  `--allow-user-manager` skips this check.
+
 What the sandbox does **not** cover (it is a write guard, not a container):
 
 * Reading: the session can read every file its Unix user can, including that
@@ -358,6 +374,10 @@ What the sandbox does **not** cover (it is a write guard, not a container):
   does work for its callers can therefore be used to write where the sandbox
   does not allow. Do not give the Operator role to a user in the `docker`
   group or with access to similar sockets.
+* File metadata: chmod, chown (on the user's own files), timestamps and
+  extended attributes are not covered, so a session can, for example, make
+  its own `~/.ssh/authorized_keys` too open for sshd to accept. It can't
+  change what any file outside the allowed directories contains.
 * The audit log records the kernel's Landlock ABI (`landlock_abi=N`) for every
   sandboxed session. Newer ABIs add network and socket scoping that portash
   does not use yet.
