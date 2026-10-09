@@ -12,8 +12,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -131,16 +134,9 @@ func cmdPAMTOTP(args []string) error {
 	if *tty {
 		// pam_exec starts us in a new session, so /dev/tty is gone; sudo
 		// names the user's terminal in PAM_TTY.
-		name := os.Getenv("PAM_TTY")
-		if !strings.HasPrefix(name, "/dev/") {
-			name = "/dev/" + name
-		}
-		if name == "/dev/" || strings.Contains(name, "..") {
-			return errors.New("no terminal to ask for the TOTP code on")
-		}
-		f, err := os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0)
+		f, err := openPAMTTY(os.Getenv("PAM_TTY"), os.Getenv("PAM_RUSER"))
 		if err != nil {
-			return errors.New("no terminal to ask for the TOTP code on")
+			return fmt.Errorf("no terminal to ask for the TOTP code on: %w", err)
 		}
 		defer f.Close()
 		fmt.Fprint(f, "TOTP code: ")
@@ -160,6 +156,40 @@ func cmdPAMTOTP(args []string) error {
 		w.Close()
 	}
 	return err
+}
+
+var ttyName = regexp.MustCompile(`^/dev/(pts/[0-9]+|tty[0-9]+)$`)
+
+// openPAMTTY opens the terminal sudo named, as root, only if it really is a
+// terminal device belonging to the user who ran sudo: PAM_TTY comes from the
+// PAM application, and this module may one day run under one that lets the
+// user pick it.
+func openPAMTTY(name, ruser string) (*os.File, error) {
+	if !strings.HasPrefix(name, "/dev/") {
+		name = "/dev/" + name
+	}
+	if !ttyName.MatchString(name) {
+		return nil, fmt.Errorf("%q is not a terminal name", name)
+	}
+	f, err := os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	var st syscall.Stat_t
+	var t syscall.Termios
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFCHR {
+		f.Close()
+		return nil, fmt.Errorf("%s is not a character device", name)
+	}
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t))); e != 0 {
+		f.Close()
+		return nil, fmt.Errorf("%s is not a terminal", name)
+	}
+	if u, err := user.Lookup(ruser); err == nil && u.Uid != strconv.Itoa(int(st.Uid)) {
+		f.Close()
+		return nil, fmt.Errorf("%s does not belong to %s", name, ruser)
+	}
+	return f, nil
 }
 
 // noEcho hides what is typed on the terminal f and returns the undo.

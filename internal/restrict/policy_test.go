@@ -175,9 +175,9 @@ systemctl status ...
 	}{
 		{"systemctl status nginx", true, false},
 		{"systemctl restart nginx", true, true},
-		{"systemctl restart sshd", false, false},         // deny wins over the totp rule
-		{"/usr/bin/systemctl status sshd", false, false}, // deny matches by base name
-		{"systemctl status --force", false, false},       // deny wildcards match flags
+		{"systemctl restart sshd", false, false},          // deny wins over the totp rule
+		{"/usr/bin/systemctl status sshd", false, false},  // deny matches by base name
+		{"systemctl status --force", false, false},        // deny wildcards match flags
 		{"systemctl restart --force nginx", false, false}, // deny words match anywhere
 		{"systemctl restart sshd --now", false, false},    // extra arguments don't dodge a deny
 		{"systemctl status nginx sshd", false, false},
