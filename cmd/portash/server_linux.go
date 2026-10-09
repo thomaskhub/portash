@@ -231,8 +231,15 @@ func cmdShell(args []string) error {
 		return fmt.Errorf("refusing session: can't write the audit log (%v)", err)
 	}
 
+	if !tty && !hasCmd {
+		// `ssh -T host`: a shell with no terminal would not be recorded, so
+		// "interactive" in the audit log always means there is a recording.
+		fmt.Fprintln(os.Stderr, "portash: a shell needs a terminal (ssh -t), or give a command")
+		return errors.New("refusing a shell without a terminal")
+	}
 	if !tty {
-		// scp, rsync, ansible, `ssh host cmd`: logged above, not recorded.
+		// scp, rsync, ansible, `ssh host cmd`: logged above with the command,
+		// not recorded.
 		if err := confine(); err != nil {
 			return err
 		}

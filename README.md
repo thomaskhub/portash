@@ -340,7 +340,7 @@ in sshd_config):
 | Role | authorized_keys prefix | What they get |
 | --- | --- | --- |
 | Admin | `command="portash shell"` | Full shell; every session logged and every terminal session recorded; sudo per sudoers |
-| Operator | `command="portash shell --sandbox --write ~/work"` | Full shell, recorded, but can only create, change or delete files in `/tmp`, `/var/tmp` and `~/work`; no sudo |
+| Operator | `command="portash shell --sandbox --write ~/work"` | Full shell, logged and recorded like Admin, but can only create, change or delete files in `/tmp`, `/var/tmp` and `~/work`; no sudo |
 | Restricted | `restrict,command="portash restrict --policy FILE"` | Only allowlisted commands; some can require a TOTP code |
 
 **Sandbox.** `--sandbox` uses Landlock (Linux 5.13+), so the kernel itself
@@ -454,6 +454,13 @@ you allow for ways to start other programs.
   than 512 MiB is free, so audit lines always have room.
 * `journalctl -u portash-gateway`: connections, unlocks, denials.
 * `journalctl -t portash-restrict`: every allowed and denied restricted command.
+
+What is recorded: every session with a terminal. A command without a
+terminal (`ssh vm cmd`, scp, Ansible) is logged with the command but its
+input and output are not recorded, so `ssh vm bash` is a shell whose typing
+is not recorded; the log still shows `cmd="bash"`. A shell with neither
+(`ssh -T vm`) is refused. For people who must not run unrecorded commands,
+use the Restricted role.
 
 If authd is down, sessions are refused (`--fail-open` to allow them anyway).
 Commands typed inside an interactive shell are only in the recording, not in

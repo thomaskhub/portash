@@ -76,6 +76,8 @@ grep -q 'hello-42' "$rec" && echo "recording $(basename "$rec") contains the ses
 S eg_alice -tt 'echo forced-$((5*5))' >/dev/null 2>&1 </dev/null || true
 sleep 0.5
 grep -lq 'forced-25' "$T"/log/sessions/eg_alice/*.cast && echo "ssh -t host cmd is recorded too" || fail "ssh -t with a command was not recorded"
+out=$(echo 'echo unrecorded' | S eg_alice 2>&1) && fail "a shell without a terminal ran: $out"
+echo "shell without a terminal (ssh -T): refused"
 
 echo "== sandboxed shell (bob)"
 S eg_bob 'touch ~/work/ok /tmp/ok && echo writes to ~/work and /tmp: ok'
