@@ -27,5 +27,6 @@ changelog:
   disable: true
 
 release:
+  prerelease: auto # tags like v0.0.1-rc.1 are marked as pre-releases
   extra_files:
     - glob: sbom/portash.cdx.json
