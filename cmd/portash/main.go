@@ -46,6 +46,9 @@ Gateway (on each VM, or one host in front of a Vabbit VPN):
           [--require-unlock] [--ticket-ttl 12h]
   portash fingerprint [--dir DIR]
           print the key pin laptops need
+  portash keygen --name HOST [--dir DIR] [--days 365]
+          make this VM's gateway key ahead of time; prints the pin. Never
+          overwrites a key; one key per VM
   portash token add NAME --device pshd_... [--ttl 2160h] [--dir DIR]
           print a new psh_ token bound to that device (shown once)
   portash token ls|rm NAME [--dir DIR]
@@ -106,6 +109,8 @@ func main() {
 		err = cmdGateway(ctx, args)
 	case "fingerprint":
 		err = cmdFingerprint(args)
+	case "keygen":
+		err = cmdKeygen(args)
 	case "token":
 		err = cmdToken(args)
 	case "invite":
@@ -328,6 +333,29 @@ func cmdFingerprint(args []string) error {
 		return err
 	}
 	fmt.Println(pin.Of(leaf))
+	return nil
+}
+
+// cmdKeygen makes the gateway's TLS key ahead of time, so its pin is known
+// before the VM exists and stays the same when that VM is rebuilt. The key is
+// for ONE VM: a key shared by several gateways would let one hacked VM
+// impersonate all of them.
+func cmdKeygen(args []string) error {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "folder for gateway.key and gateway.crt (the gateway's --dir)")
+	name := fs.String("name", "", "the VM this key is for (host name); stored in the certificate")
+	days := fs.Int("days", 365, "how long the certificate is valid (1-3650)")
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return errors.New("--name is required: one key per VM (use the VM's host name)")
+	}
+	p, err := pin.Generate(*dir, *name, *days)
+	if err != nil {
+		return err
+	}
+	fmt.Println(p)
 	return nil
 }
 

@@ -146,6 +146,31 @@ nobody in between, Cloudflare included, can pretend to be the gateway:
 portash fingerprint --dir /var/lib/portash      # prints sha256:...; send it to your users
 ```
 
+**Making the key ahead of time** (provisioning, or VMs you rebuild): the pin
+stays the same when the VM is rebuilt, and your users can be set up before the
+VM exists.
+
+```sh
+portash keygen --name vm1.example.com --dir ./vm1     # prints the pin (sha256:...), nothing else
+# store ./vm1/gateway.key and gateway.crt in your secrets store; install them as
+# /var/lib/portash/gateway.key (mode 0600) and gateway.crt before the gateway starts
+```
+
+* **One key per VM, never shared.** If several gateways share a key, one hacked
+  VM can impersonate all of them. `--name` is written into the certificate so
+  a shared key is easy to spot.
+* `keygen` never overwrites: if a key or certificate is already there it stops
+  and changes nothing. The gateway does the same; a key whose certificate went
+  missing is an error, not a reason to make a new key.
+* The key is written with mode 0600 and never printed; only the pin is.
+* What a stolen key allows: someone could pose as that gateway's TLS endpoint.
+  They would still need the token, the device key's signature for the TLS
+  session and the TOTP unlock, and they get nothing from sshd. Still replace
+  the key: make a new one, give users both pins for a while
+  (`portash login ... --pin PIN1,PIN2`), then remove the old pin.
+* `--days` sets how long the certificate is valid (default 365, at most 3650).
+  Renewing the certificate with the same key does not change the pin.
+
 **3. Sign the VM's host key** with an SSH CA, so laptops never have to trust a
 host key on first sight. Use the VM's hostname:
 
