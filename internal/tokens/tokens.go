@@ -35,6 +35,7 @@ type Entry struct {
 	Hash    [32]byte
 	Device  ed25519.PublicKey
 	Expires time.Time // zero = never
+	Source  string    // "" = the tokens file, else the drop-in file (tokens.d/NAME)
 }
 
 func (e Entry) Expired(now time.Time) bool { return !e.Expires.IsZero() && !now.Before(e.Expires) }
@@ -171,6 +172,9 @@ func Add(path, name string, device ed25519.PublicKey, ttl time.Duration) (string
 			return "", fmt.Errorf("token %q already exists; remove it first", name)
 		}
 	}
+	if src, ok := dropinSource(path, name); ok {
+		return "", fmt.Errorf("token %q already exists in %s", name, src)
+	}
 	tok, err := New()
 	if err != nil {
 		return "", err
@@ -196,6 +200,9 @@ func AddHash(path, name string, hash [32]byte, device ed25519.PublicKey, ttl tim
 			return fmt.Errorf("token %q already exists; remove it first", name)
 		}
 	}
+	if src, ok := dropinSource(path, name); ok {
+		return fmt.Errorf("token %q already exists in %s", name, src)
+	}
 	return addEntry(path, entries, name, hash, device, ttl)
 }
 
@@ -209,7 +216,7 @@ func addEntry(path string, entries []Entry, name string, hash [32]byte, device e
 
 // Exists reports whether a token named name is in the file at path.
 func Exists(path, name string) bool {
-	entries, _ := Load(path)
+	entries, _, _ := LoadAll(path)
 	for _, e := range entries {
 		if e.Name == name {
 			return true
@@ -220,7 +227,7 @@ func Exists(path, name string) bool {
 
 func Remove(path, name string) error {
 	entries, err := Load(path)
-	if err != nil {
+	if err != nil && !isNotExist(err) {
 		return err
 	}
 	kept := entries[:0]
@@ -230,68 +237,137 @@ func Remove(path, name string) error {
 		}
 	}
 	if len(kept) == len(entries) {
+		if src, ok := dropinSource(path, name); ok {
+			return fmt.Errorf("token %q comes from %s: remove that line or file", name, src)
+		}
 		return fmt.Errorf("no token named %q", name)
 	}
 	return Save(path, kept)
 }
 
-// Store checks presented tokens against the file. The file is re-read on
-// every check (it is tiny) and re-parsed whenever its contents change, so
-// revocation takes effect on the next connection.
+// Store checks presented tokens against the tokens file and the drop-in
+// folder next to it (tokens.d). Both are re-read on every check (they are
+// tiny) and re-parsed whenever their contents change, so revocation takes
+// effect on the next connection.
 type Store struct {
-	path    string
-	now     func() time.Time
-	mu      sync.Mutex
-	sum     [32]byte
-	entries []Entry
+	path string
+	now  func() time.Time
+	log  func(format string, args ...any) // see SetLog
+
+	mu          sync.Mutex
+	refused     []Refused // what the last load ignored
+	sum         [32]byte  // of everything read last time
+	entries     []Entry
+	mainSum     [32]byte
+	mainEntries []Entry
+	logged      map[string]bool
 }
 
 // Path is the token file the store reads.
 func (s *Store) Path() string { return s.path }
 
 func NewStore(path string) (*Store, error) {
-	s := &Store{path: path, now: time.Now}
+	s := &Store{path: path, now: time.Now, logged: map[string]bool{}}
 	if _, err := s.load(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Store) load() ([]Entry, error) {
+// SetLog makes the store tell f about every drop-in file or line it ignores:
+// once, and again only if that file changes. What was ignored at start-up is
+// reported at once.
+func (s *Store) SetLog(f func(format string, args ...any)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.log = f
+	s.report(s.refused)
+}
+
+// Refresh looks at the tokens file and tokens.d now, so that a broken file is
+// reported soon after it was written and not only when somebody connects.
+func (s *Store) Refresh() { s.load() }
+
+// readMain reads the tokens file. A missing file means no tokens; a file
+// others can read, or one that does not parse, is an error and nobody gets in
+// (the drop-ins included): that is how it has always been.
+func (s *Store) readMain() ([]Entry, [32]byte, error) {
 	f, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil // no tokens yet: nobody gets in
+		return []Entry{}, [32]byte{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, [32]byte{}, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, [32]byte{}, err
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("%s must not be readable by group/other (chmod 600)", s.path)
+		return nil, [32]byte{}, fmt.Errorf("%s must not be readable by group/other (chmod 600)", s.path)
 	}
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(f); err != nil {
-		return nil, err
+		return nil, [32]byte{}, err
 	}
 	sum := sha256.Sum256(buf.Bytes())
-	if sum == s.sum && s.entries != nil {
-		return s.entries, nil
+	if sum == s.mainSum && s.mainEntries != nil {
+		return s.mainEntries, sum, nil
 	}
 	entries, err := Parse(buf.Bytes(), s.path)
 	if err != nil {
-		return nil, err
+		return nil, [32]byte{}, err
 	}
 	if entries == nil {
 		entries = []Entry{}
 	}
+	return entries, sum, nil
+}
+
+func (s *Store) load() ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	main, mainSum, err := s.readMain()
+	if err != nil {
+		return nil, err
+	}
+	files, refused := readDropins(DropinDir(s.path))
+	h := sha256.New()
+	h.Write(mainSum[:])
+	for _, f := range files {
+		h.Write([]byte(f.name))
+		h.Write(f.sum[:])
+	}
+	for _, r := range refused {
+		h.Write([]byte(r.File + "\x00" + r.Reason))
+		h.Write(r.sum[:])
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	if sum == s.sum && s.entries != nil {
+		return s.entries, nil
+	}
+	entries, dup := merge(main, files)
+	s.refused = append(refused, dup...)
+	s.report(s.refused)
+	s.mainEntries, s.mainSum = main, mainSum
 	s.entries, s.sum = entries, sum
 	return entries, nil
+}
+
+// report tells Log about each refusal that was not reported yet.
+func (s *Store) report(rs []Refused) {
+	if s.log == nil {
+		return
+	}
+	for _, r := range rs {
+		key := fmt.Sprintf("%s|%s|%x", r.File, r.Reason, r.sum)
+		if !s.logged[key] {
+			s.logged[key] = true
+			s.log("%s", r.String())
+		}
+	}
 }
 
 // Lookup returns the live entry for a token, or false. Every entry is

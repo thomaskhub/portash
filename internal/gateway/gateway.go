@@ -392,6 +392,7 @@ func (g *Gateway) track(s *stream, on bool) {
 
 func (g *Gateway) sweepLoop() {
 	for range time.Tick(g.cfg.SweepEvery) {
+		g.cfg.Tokens.Refresh() // reports a broken tokens.d file soon after it was written
 		g.Sweep()
 	}
 }
