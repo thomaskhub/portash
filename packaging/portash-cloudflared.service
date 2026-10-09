@@ -1,0 +1,33 @@
+[Unit]
+Description=Cloudflare Tunnel to the portash gateway
+After=network-online.target portash-gateway.service
+Wants=network-online.target
+
+[Service]
+# The tunnel token stays in a root-only file and reaches cloudflared in its
+# environment, which only it and root can read, not on its command line
+# (which every user can read in ps, and in the world-readable unit file that
+# `cloudflared service install` writes):
+#   install -d -m 700 /etc/cloudflared
+#   (umask 077; echo 'TUNNEL_TOKEN=eyJ...' > /etc/cloudflared/token.env)
+EnvironmentFile=/etc/cloudflared/token.env
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

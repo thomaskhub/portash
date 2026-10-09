@@ -121,6 +121,10 @@ useradd --system --home-dir /var/lib/portash --shell /usr/sbin/nologin portash
 install -d -o portash -g portash -m 700 /var/lib/portash
 echo "ListenAddress 127.0.0.1" > /etc/ssh/sshd_config.d/portash.conf
 echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/portash.conf
+# keys in a root-owned file per user, so a session can't edit its own key
+# line and drop the forced command (see Roles)
+echo "AuthorizedKeysFile /etc/ssh/authorized_keys/%u" >> /etc/ssh/sshd_config.d/portash.conf
+install -d -m 755 /etc/ssh/authorized_keys
 systemctl restart ssh
 ```
 
@@ -163,8 +167,20 @@ systemctl enable --now portash-gateway
 
 **6. Connect the Cloudflare Tunnel.** In the Cloudflare dashboard, go to
 Zero Trust, then Networks, then Tunnels, and create a tunnel (type
-Cloudflared) named after the VM. Run the install command it shows on the VM;
-that installs `cloudflared` as a service. Then add a public hostname:
+Cloudflared) named after the VM. The install command it shows ends in a long
+token (`eyJ...`). Don't run that command: it puts the token in a unit file
+every user on the VM can read. Install `cloudflared` and keep the token in a
+root-only file instead:
+
+```sh
+install -m 755 cloudflared-linux-amd64 /usr/local/bin/cloudflared
+install -d -m 700 /etc/cloudflared
+(umask 077; echo 'TUNNEL_TOKEN=eyJ...' > /etc/cloudflared/token.env)
+cp packaging/portash-cloudflared.service /etc/systemd/system/
+systemctl enable --now portash-cloudflared
+```
+
+Then add a public hostname:
 
 | Field | Value |
 | --- | --- |
@@ -317,7 +333,7 @@ portash totp enroll alice-laptop --unlock           # prints otpauth://..., give
 echo 'otpauth://...' | portash totp import alice-laptop --unlock     # on every other VM
 
 # their SSH key, with a role (below)
-echo 'command="portash shell" ssh-ed25519 AAAA... alice' >> ~alice/.ssh/authorized_keys
+echo 'command="portash shell" ssh-ed25519 AAAA... alice' >> /etc/ssh/authorized_keys/alice
 ```
 
 Send Alice the token, the gateway pin and the TOTP link over a channel you
@@ -330,12 +346,15 @@ portash token rm alice-laptop --dir /var/lib/portash
 ```
 
 New connections are refused at once and open sessions are cut within 5
-seconds. Also remove their key from `authorized_keys`.
+seconds. Also remove their key from `/etc/ssh/authorized_keys/alice`.
 
 ### Roles
 
-Pick one per SSH key in `authorized_keys` (or with `Match User` + `ForceCommand`
-in sshd_config):
+Pick one per SSH key in `/etc/ssh/authorized_keys/USER` (or with `Match User` +
+`ForceCommand` in sshd_config). Keep keys in that root-owned file, not in
+`~/.ssh/authorized_keys`: a user can edit their own file and remove the
+`command=` prefix, which turns off logging, recording and the sandbox for
+that key.
 
 | Role | authorized_keys prefix | What they get |
 | --- | --- | --- |
@@ -524,7 +543,7 @@ The repository layout the playbook expects:
 
 ```
 portash.yml
-files/portash-authd.service, files/portash-gateway.service
+files/portash-authd.service, files/portash-gateway.service, files/portash-cloudflared.service
 files/devops_authorized_keys              # one line per laptop, for the shared devops account
 pins.txt                                  # public: one "hostname pin" line per VM
 portash-secrets/people/tokens             # plain text

@@ -17,6 +17,9 @@
     cloudflared_version: "2026.10.0"
     cloudflared_sha256: d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db # amd64
     ssh_service: ssh # sshd on RHEL-like systems
+    # The cloud image's own login user (ubuntu, ec2-user, debian, ...): its
+    # passwordless sudo is removed. "" leaves it alone.
+    cloud_default_user: ubuntu
 
   tasks:
     - name: Install portash
@@ -54,6 +57,20 @@
     - name: Daily unlock secrets (shared by every VM)
       copy: { src: "{{ secrets }}/people/unlock/", dest: /var/lib/portash/unlock/, owner: portash, group: portash, mode: "0600" }
 
+    # copy never deletes, so a removed person's secret (and its state) would
+    # stay, and come back to life for a later token with the same name.
+    - name: Find unlock files on this VM
+      find: { paths: /var/lib/portash/unlock, hidden: true }
+      register: unlock_on_vm
+
+    - name: Remove unlock files of people no longer in the repository
+      file: { path: "{{ item.path }}", state: absent }
+      loop: "{{ unlock_on_vm.files }}"
+      loop_control: { label: "{{ item.path | basename }}" }
+      when: >-
+        ((item.path | basename | regex_replace('^\\.', '') | regex_replace('\\..*$', '')) ~ '.secret')
+        not in (lookup('fileglob', secrets ~ '/people/unlock/*.secret', wantlist=True) | map('basename') | list)
+
     # sshd: localhost only, keys only, and a host key signed by your host CA,
     # so laptops never have to accept a host key on first sight.
     - name: Host key and certificate
@@ -74,6 +91,9 @@
           KbdInteractiveAuthentication no
           HostKey /etc/ssh/ssh_host_ed25519_key
           HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
+          # Keys live in a root-owned file, so no session can edit them and
+          # drop its forced command.
+          AuthorizedKeysFile /etc/ssh/authorized_keys/%u
       notify: restart ssh
 
     # One shared account; files/devops_authorized_keys has one line per
@@ -82,11 +102,22 @@
     - name: devops account
       user: { name: devops, shell: /bin/bash }
 
-    - name: devops ssh folder
-      file: { path: /home/devops/.ssh, state: directory, owner: devops, group: devops, mode: "0700" }
+    - name: Root-owned folder for ssh keys
+      file: { path: /etc/ssh/authorized_keys, state: directory, owner: root, group: root, mode: "0755" }
 
-    - name: devops keys (one per laptop)
-      copy: { src: "{{ playbook_dir }}/files/devops_authorized_keys", dest: /home/devops/.ssh/authorized_keys, owner: devops, group: devops, mode: "0600" }
+    - name: devops keys (one per laptop), which devops can't change
+      copy: { src: "{{ playbook_dir }}/files/devops_authorized_keys", dest: /etc/ssh/authorized_keys/devops, owner: root, group: root, mode: "0644" }
+
+    # Its keys in ~/.ssh stop working with the setting above; this removes
+    # its passwordless sudo too, so it is just a local account.
+    - name: No passwordless sudo for the cloud image's default user
+      file: { path: /etc/sudoers.d/90-cloud-init-users, state: absent }
+      when: cloud_default_user | length > 0
+
+    - name: Lock the cloud image's default user
+      user: { name: "{{ cloud_default_user }}", password_lock: true }
+      when: cloud_default_user | length > 0
+      failed_when: false
 
     # sudo asks for a TOTP code, every time (README, "TOTP sudo"). The secret
     # was made with: portash totp enroll devops --totp-dir portash-secrets/totp
@@ -134,7 +165,7 @@
     # Copies of packaging/*.service from the portash repository.
     - name: systemd units
       copy: { src: "{{ playbook_dir }}/files/{{ item }}", dest: "/etc/systemd/system/{{ item }}", mode: "0644" }
-      loop: [portash-authd.service, portash-gateway.service]
+      loop: [portash-authd.service, portash-gateway.service, portash-cloudflared.service]
       tags: [services]
 
     - name: Start authd and the gateway
@@ -157,10 +188,19 @@
       no_log: true
       tags: [services]
 
-    - name: Connect the tunnel
-      command: /usr/local/bin/cloudflared service install {{ cloudflare_tunnel_token }}
-      args: { creates: /etc/systemd/system/cloudflared.service }
+    # In a root-only file, not on cloudflared's command line where every
+    # user could read it (as `cloudflared service install` would put it).
+    - name: cloudflared folder
+      file: { path: /etc/cloudflared, state: directory, owner: root, group: root, mode: "0700" }
+
+    - name: Tunnel token file
+      copy: { dest: /etc/cloudflared/token.env, content: "TUNNEL_TOKEN={{ cloudflare_tunnel_token }}\n", owner: root, group: root, mode: "0600" }
       no_log: true
+      notify: restart portash-cloudflared
+      tags: [services]
+
+    - name: Connect the tunnel
+      systemd: { name: portash-cloudflared, enabled: true, state: started, daemon_reload: true }
       tags: [services]
 
   handlers:
@@ -169,4 +209,7 @@
       tags: [services]
     - name: restart portash-gateway
       service: { name: portash-gateway, state: restarted }
+      tags: [services]
+    - name: restart portash-cloudflared
+      service: { name: portash-cloudflared, state: restarted }
       tags: [services]
