@@ -82,6 +82,7 @@ type session struct {
 
 type Gateway struct {
 	cfg     Config
+	quiet   sync.Map // connections that have not sent a request yet
 	mu      sync.Mutex
 	active  map[string]int
 	streams map[*stream]struct{}
@@ -152,8 +153,40 @@ func (g *Gateway) Server(addr string, cert tls.Certificate) *http.Server {
 			Certificates: []tls.Certificate{cert},
 			NextProtos:   []string{"http/1.1"}, // upgrades need HTTP/1.1
 		},
-		ErrorLog: log.New(io.Discard, "", 0), // TLS scanner noise
+		ErrorLog:  log.New(io.Discard, "", 0), // TLS scanner noise
+		ConnState: g.connState,
 	}
+}
+
+// connState counts a connection that closes without sending a request (a
+// failed handshake, or one held open to take up a slot) as a failure of its
+// IP, so the fail limiter also stops clients that never get as far as a
+// request.
+func (g *Gateway) connState(c net.Conn, st http.ConnState) {
+	switch st {
+	case http.StateNew:
+		g.quiet.Store(c, struct{}{})
+	case http.StateActive, http.StateHijacked:
+		g.quiet.Delete(c)
+	case http.StateClosed:
+		if _, ok := g.quiet.LoadAndDelete(c); ok {
+			g.fails.fail(hostOf(c.RemoteAddr().String()))
+		}
+	}
+}
+
+// notFound answers anything that isn't ours with a plain 404, counts it
+// against the IP, and closes the connection so it can't hold a slot.
+func (g *Gateway) notFound(w http.ResponseWriter, r *http.Request, ip string) {
+	g.fails.fail(ip)
+	w.Header().Set("Connection", "close")
+	http.NotFound(w, r)
+}
+
+// ignore closes the connection of an IP that failed too often.
+func ignore(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Connection", "close")
+	http.NotFound(w, r)
 }
 
 // Listener caps concurrent connections at MaxConns, and at MaxConnsPerIP from
@@ -161,7 +194,7 @@ func (g *Gateway) Server(addr string, cert tls.Certificate) *http.Server {
 // cap, are closed) instead of costing a goroutine and a TLS handshake.
 func (g *Gateway) Listener(ln net.Listener) net.Listener {
 	return &limitListener{Listener: ln, sem: make(chan struct{}, g.cfg.MaxConns),
-		perIP: g.cfg.MaxConnsPerIP, byIP: map[string]int{}}
+		perIP: g.cfg.MaxConnsPerIP, byIP: map[string]int{}, blocked: g.fails.blocked}
 }
 
 // LimitListener caps concurrent connections without a per-IP limit, for a
@@ -176,6 +209,8 @@ type limitListener struct {
 	perIP int
 	mu    sync.Mutex
 	byIP  map[string]int
+	// blocked IPs are closed at once, before they cost a TLS handshake.
+	blocked func(ip string) bool
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
@@ -189,7 +224,13 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		if l.perIP == 0 {
 			return &limitConn{Conn: c, release: func() { <-l.sem }}, nil
 		}
-		key := ipKey(hostOf(c.RemoteAddr().String()))
+		host := hostOf(c.RemoteAddr().String())
+		if l.blocked != nil && l.blocked(host) {
+			c.Close()
+			<-l.sem
+			continue
+		}
+		key := ipKey(host)
 		l.mu.Lock()
 		over := l.byIP[key] >= l.perIP
 		if !over {
@@ -439,7 +480,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == UnlockPath && r.Method == http.MethodPost {
 		if g.fails.blocked(ip) {
-			http.NotFound(w, r)
+			ignore(w, r)
 			return
 		}
 		g.serveUnlock(w, r, ip)
@@ -448,22 +489,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Anything that isn't a well-formed, authenticated upgrade looks like a
 	// plain 404, so scanners learn nothing. IPs that keep failing are ignored
 	// before any token work is done.
+	if g.fails.blocked(ip) {
+		ignore(w, r)
+		return
+	}
 	if r.URL.Path != Path || r.Method != http.MethodGet || r.ProtoMajor != 1 ||
 		!strings.EqualFold(r.Header.Get("Upgrade"), UpgradeProto) ||
 		!headerHasToken(r.Header, "Connection", "upgrade") {
-		http.NotFound(w, r)
-		return
-	}
-	if g.fails.blocked(ip) {
-		http.NotFound(w, r)
+		g.notFound(w, r, ip)
 		return
 	}
 	rawTarget := r.URL.Query().Get("target")
 	entry, hash, ok := g.authenticate(r, rawTarget)
 	if !ok {
-		g.fails.fail(ip)
 		g.cfg.Log.Printf("deny %s: bad token or device signature", remote)
-		http.NotFound(w, r)
+		g.notFound(w, r, ip)
 		return
 	}
 	name := entry.Name

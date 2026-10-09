@@ -689,3 +689,72 @@ func TestPerIPConnectionCap(t *testing.T) {
 		t.Fatal("slot not freed")
 	}
 }
+
+// serveReal runs the gateway the way main does: its own http.Server and
+// listener, so ConnState and the listener's checks are in play.
+func serveReal(t *testing.T, e env) string {
+	t.Helper()
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := e.g.Server("", e.cert)
+	go srv.ServeTLS(e.g.Listener(raw), "", "")
+	t.Cleanup(func() { srv.Close() })
+	return raw.Addr().String()
+}
+
+func TestProbeIsClosedAndCounted(t *testing.T) {
+	e := setup(t)
+	addr := serveReal(t, e)
+	for i := 0; i < 3; i++ {
+		c, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Keep-alive is asked for; the gateway must close anyway.
+		io.WriteString(c, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+		c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		b, err := io.ReadAll(c)
+		c.Close()
+		if err != nil {
+			t.Fatalf("probe %d: connection held open after 404: %v", i, err)
+		}
+		if !strings.HasPrefix(string(b), "HTTP/1.1 404") {
+			t.Fatalf("got %q", b)
+		}
+	}
+	o := e.opts()
+	o.Gateway = addr
+	if _, err := dial.Connect(context.Background(), o, e.echo); err == nil {
+		t.Fatal("IP that kept probing was not ignored")
+	}
+}
+
+func TestSilentConnectionsAreCounted(t *testing.T) {
+	e := setup(t)
+	addr := serveReal(t, e)
+	for i := 0; i < 3; i++ {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Close() // no TLS, no request
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, err = c.Read(make([]byte, 1))
+		c.Close()
+		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+			return // closed at accept: the IP is ignored
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("connections that never sent a request were not counted")
+		}
+	}
+}

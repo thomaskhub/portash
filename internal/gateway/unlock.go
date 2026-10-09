@@ -154,14 +154,13 @@ func ticketHash(r *http.Request) ([32]byte, bool) {
 // TOTP code, buys a ticket.
 func (g *Gateway) serveUnlock(w http.ResponseWriter, r *http.Request, ip string) {
 	if g.cfg.Unlock == nil {
-		http.NotFound(w, r)
+		g.notFound(w, r, ip)
 		return
 	}
 	entry, hash, ok := g.authenticate(r, UnlockTarget)
 	if !ok {
-		g.fails.fail(ip)
 		g.cfg.Log.Printf("deny %s: unlock with bad token or device signature", r.RemoteAddr)
-		http.NotFound(w, r)
+		g.notFound(w, r, ip)
 		return
 	}
 	err := g.cfg.Unlock.TOTP.Check(entry.Name, r.Header.Get(TOTPHeader))
