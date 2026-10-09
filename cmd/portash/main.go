@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"portash/internal/gateway"
 	"portash/internal/pin"
 	"portash/internal/restrict"
+	"portash/internal/secretfile"
 	"portash/internal/tokens"
 	"portash/internal/totp"
 )
@@ -48,6 +50,10 @@ Gateway (on each VM, or one host in front of a Vabbit VPN):
           print the key pin laptops need
   portash token add NAME --device pshd_... [--ttl 2160h] [--dir DIR]
           print a new psh_ token bound to that device (shown once)
+  portash token new NAME --device pshd_... --out FILE [--ttl 2160h] [--json]
+          make a token anywhere, with no state directory: the token goes to
+          FILE (new, mode 0600), only the line with its hash is printed
+          (for the VM's tokens file). The token is never printed
   portash token ls|rm NAME [--dir DIR]
   portash invite NAME --gateway https://HOST [--ssh-user USER] [--ttl 1h] [--dir DIR]
           print an invite for one laptop (works once), for "portash join"
@@ -65,7 +71,7 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
           root daemon: TOTP checks, audit log, recordings
   portash totp enroll|rm USER [--totp-dir DIR]
           a user's TOTP secret for sudo and !totp rules (root)
-  portash totp enroll|import|rm TOKEN --unlock [--dir /var/lib/portash]
+  portash totp enroll|import|rm TOKEN --unlock [--dir /var/lib/portash] [--if-missing] [--json]
           TOTP for the daily unlock; import reads an existing secret from
           stdin, so one phone entry unlocks every VM
   portash pam-totp
@@ -335,17 +341,21 @@ func cmdToken(args []string) error {
 	fs := flag.NewFlagSet("token", flag.ContinueOnError)
 	dir := fs.String("dir", "/var/lib/portash", "state directory")
 	device := fs.String("device", "", "the laptop's device key from `portash device` (required for add)")
-	ttl := fs.Duration("ttl", 90*24*time.Hour, "token lifetime for add (0 = never expires)")
+	ttl := fs.Duration("ttl", 90*24*time.Hour, "token lifetime for add and new (0 = never expires)")
+	out := fs.String("out", "", "new: file to write the token to (must not exist; mode 0600)")
+	asJSON := fs.Bool("json", false, "new: print the result as JSON (never contains the token)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	path := filepath.Join(*dir, "tokens")
-	usage := errors.New("usage: portash token add NAME --device KEY [--ttl 2160h] | ls | rm NAME")
+	usage := errors.New("usage: portash token add NAME --device KEY [--ttl 2160h] | new NAME --device KEY --out FILE | ls | rm NAME")
 	if len(pos) == 0 {
 		return usage
 	}
 	switch {
+	case pos[0] == "new" && len(pos) == 2:
+		return tokenNew(pos[1], *device, *ttl, *out, *asJSON)
 	case pos[0] == "add" && len(pos) == 2:
 		pub, err := tokens.ParseDevice(*device)
 		if err != nil {
@@ -382,6 +392,49 @@ func cmdToken(args []string) error {
 		return tokens.Remove(path, pos[1])
 	}
 	return usage
+}
+
+// tokenNew makes a token without any state directory: the token goes to a new
+// file, and only the line with its hash is printed, ready for a VM's tokens
+// file or a tokens.d drop-in. The token itself is never printed.
+func tokenNew(name, device string, ttl time.Duration, out string, asJSON bool) error {
+	if out == "" {
+		return errors.New("--out FILE is required: the token is written there and never printed")
+	}
+	pub, err := tokens.ParseDevice(device)
+	if err != nil {
+		return err
+	}
+	tok, e, err := tokens.NewEntry(name, pub, ttl)
+	if err != nil {
+		return err
+	}
+	if err := secretfile.WriteNew(out, []byte(tok+"\n")); err != nil {
+		return err
+	}
+	if ttl == 0 {
+		fmt.Fprintln(os.Stderr, "warning: this token never expires")
+	}
+	fmt.Fprintf(os.Stderr, "Token for %s written to %s (mode 0600). Only the line below belongs on the VM.\n", name, out)
+	if !asJSON {
+		fmt.Println(tokens.FormatEntry(e))
+		return nil
+	}
+	res := struct {
+		Name    string  `json:"name"`
+		Line    string  `json:"line"`
+		Expires *string `json:"expires"`
+	}{Name: e.Name, Line: tokens.FormatEntry(e)}
+	if !e.Expires.IsZero() {
+		x := e.Expires.UTC().Format(time.RFC3339)
+		res.Expires = &x
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
 }
 
 func cmdRestrict(args []string) error {
