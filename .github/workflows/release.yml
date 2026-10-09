@@ -1,0 +1,41 @@
+name: release
+# Push a tag such as v1.0.0 to publish binaries, their SHA-256 sums, the SBOM
+# and a signed build provenance attestation. Check a download with:
+#   sha256sum -c SHA256SUMS --ignore-missing
+#   gh attestation verify portash-linux-amd64 --repo thomaskhub/portash
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the release
+      id-token: write     # sign the attestation (Sigstore, keyless)
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - name: Build
+        run: |
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${t%/*}; arch=${t#*/}; ext=; [ "$os" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/portash-$os-$arch$ext ./cmd/portash
+          done
+          cp sbom/portash.cdx.json dist/
+          (cd dist && sha256sum * > SHA256SUMS)
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/portash-*
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "portash $GITHUB_REF_NAME" --generate-notes --verify-tag

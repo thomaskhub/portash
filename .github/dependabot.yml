@@ -1,0 +1,8 @@
+# Keeps the SHA-pinned GitHub Actions current; there are no Go modules to
+# update (portash has no dependencies).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

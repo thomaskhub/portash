@@ -11,7 +11,9 @@
   vars:
     secrets: "{{ playbook_dir }}/portash-secrets"
     vm_dir: "{{ secrets }}/vms/{{ vm_name }}"
-    # Where you publish the Linux build of portash, and its SHA-256.
+    # The Linux build of portash and its SHA-256: a release download, e.g.
+    # https://github.com/thomaskhub/portash/releases/download/v1.0.0/portash-linux-amd64,
+    # with the sum from that release's SHA256SUMS (after gh attestation verify).
     portash_url: https://downloads.example.com/portash/portash-linux-amd64
     portash_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
     cloudflared_version: "2026.10.0"

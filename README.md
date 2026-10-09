@@ -88,7 +88,16 @@ runs in a Podman or Docker container: see
 
 ### Get the binary
 
-Until there are signed releases, build it (Go 1.22 or newer):
+Download a release from the GitHub Releases page. Each one carries
+`SHA256SUMS` and a signed build provenance attestation, which proves the
+binary was built by this repository's release workflow from that tag:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify portash-linux-amd64 --repo thomaskhub/portash
+```
+
+Or build it yourself (Go 1.22 or newer):
 
 ```sh
 git clone https://github.com/thomaskhub/portash && cd portash
