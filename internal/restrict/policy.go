@@ -291,6 +291,7 @@ func (r Rule) Match(args []string) bool {
 		if !full && !base {
 			return false
 		}
+		return denySubsequence(toks[1:], args[1:])
 	} else if args[0] != toks[0] {
 		return false
 	}
@@ -310,6 +311,27 @@ func (r Rule) Match(args []string) bool {
 		}
 	}
 	return len(args) == len(toks)
+}
+
+// denySubsequence reports whether the deny rule's words appear in args in
+// order, with any other arguments before, between and after them: a deny
+// rule must not be dodged by adding or moving an argument
+// (systemctl restart --force nginx against "!deny * --force").
+func denySubsequence(toks, args []string) bool {
+	i := 0
+	for _, t := range toks {
+		if t == Rest {
+			return true
+		}
+		for i < len(args) && !matchArg(t, args[i], true) {
+			i++
+		}
+		if i == len(args) {
+			return false
+		}
+		i++
+	}
+	return true
 }
 
 // Check returns the first allow rule that matches args, or nil. Any

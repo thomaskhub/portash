@@ -432,8 +432,10 @@ Give a key an allowlist instead of a shell. `/etc/portash/policy/deploy`
 # are refused, and docker/git/tar/rsync/... only with fixed arguments.
 # "!unsafe <rule>" overrides that for a program you have checked.
 # "!totp <rule>" asks for a TOTP code first (typed, or piped: echo 123456 | ssh vm cmd).
-# "!deny <rule>" refuses matches even if another rule allows them; in deny
-# rules wildcards also match flags and the program may be a pattern.
+# "!deny <rule>" refuses matches even if another rule allows them. Its words
+# match in order anywhere in the command (other arguments may come before,
+# between and after them), wildcards also match flags, and the program may be
+# a pattern: "!deny * --force" refuses any command with --force in it.
 uptime
 systemctl status ...
 !totp systemctl restart nginx

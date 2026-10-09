@@ -178,11 +178,14 @@ systemctl status ...
 		{"systemctl restart sshd", false, false},         // deny wins over the totp rule
 		{"/usr/bin/systemctl status sshd", false, false}, // deny matches by base name
 		{"systemctl status --force", false, false},       // deny wildcards match flags
+		{"systemctl restart --force nginx", false, false}, // deny words match anywhere
+		{"systemctl restart sshd --now", false, false},    // extra arguments don't dodge a deny
+		{"systemctl status nginx sshd", false, false},
 	}
 	for _, c := range cases {
 		args, _ := Split(c.cmd)
 		r, d := p.Check(args)
-		if (r != nil) != c.allowed || (r != nil && r.TOTP != c.totp) || (d != nil) == c.allowed && strings.Contains(c.cmd, "sshd") {
+		if (r != nil) != c.allowed || (r != nil && r.TOTP != c.totp) || (d != nil) == c.allowed {
 			t.Errorf("%q: allow=%v deny=%v", c.cmd, r, d)
 		}
 	}
