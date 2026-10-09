@@ -429,13 +429,18 @@ you allow for ways to start other programs.
 * `/var/log/portash/audit.log`: every session, with the command when one was given
   (`ssh vm cmd`, scp, Ansible), written by authd. User, uid and pid come from
   the kernel; `detail="..."` is what that user's session reported, quoted so it
-  cannot add fields. Sessions may only write `event=session`, at most 20 lines
-  a second per user. The file rotates at 64 MiB and keeps `audit.log.1` to
-  `.8`. If the disk is full, new sessions are refused (fail closed); keep the
-  console as a way in, or use `portash shell --fail-open`.
+  cannot add fields. Sessions may only write `event=session`. Each user gets
+  at most 10 authd requests a second (bursts of 100) and 32 open connections.
+  The file rotates at 64 MiB and keeps `audit.log.1` to `.8`; authd also
+  writes every line to the journal (`journalctl -u portash-authd`). If the
+  disk is full, new sessions are refused (fail closed); keep the console as a
+  way in, or use `portash shell --fail-open`.
 * `/var/log/portash/sessions/<user>/*.cast`: every session with a terminal
   (`ssh vm`, `ssh -t vm cmd`): what it printed, which includes what was typed
-  when the terminal echoes it. Play with `asciinema play FILE`.
+  when the terminal echoes it. Play with `asciinema play FILE`. Each user's
+  recordings may use 2 GiB; beyond that their new terminal sessions are
+  refused until an admin archives the old files. Recordings stop when less
+  than 512 MiB is free, so audit lines always have room.
 * `journalctl -u portash-gateway`: connections, unlocks, denials.
 * `journalctl -t portash-restrict`: every allowed and denied restricted command.
 

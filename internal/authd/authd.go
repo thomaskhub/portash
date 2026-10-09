@@ -34,8 +34,12 @@ const (
 
 	defaultMaxLogBytes = 64 << 20 // rotate audit.log beyond this
 	defaultKeepLogs    = 8        // rotated files kept: audit.log.1 ... .N
-	defaultLogRate     = 20       // "log" requests per second per user
+	defaultLogRate     = 10       // requests per second per user, all ops
 	defaultLogBurst    = 100
+	maxConnsPerUser    = 32
+
+	defaultUserQuota = 2 << 30   // recordings kept per user before new ones are refused
+	defaultReserve   = 512 << 20 // free space left for audit lines; recordings stop here
 )
 
 // logEvents are the events a session may write with the "log" op. authd
@@ -61,16 +65,63 @@ type Server struct {
 
 	// MaxLogBytes rotates audit.log when it grows beyond it (default 64 MiB);
 	// KeepLogs rotated files are kept (default 8). LogRate and LogBurst limit
-	// the "log" op per user, so one account can't fill the disk (and with it
-	// make every login fail, since sessions are refused when logging fails).
+	// every request per user, so one account can't fill the disk or rotate
+	// other people's lines away (and with a full disk make every login fail,
+	// since sessions are refused when logging fails).
 	MaxLogBytes int64
 	KeepLogs    int
 	LogRate     float64
 	LogBurst    float64
 
+	// UserQuota caps one user's recordings on disk (default 2 GiB): beyond
+	// it, that user's new recordings (and so their terminal sessions) are
+	// refused, nobody else's. Reserve is free space kept for audit lines
+	// (default 512 MiB): recordings are refused or cut off below it.
+	UserQuota int64
+	Reserve   int64
+	// freeBytes is overridable for tests.
+	freeBytes func(dir string) int64
+
 	mu        sync.Mutex
 	recording map[int]int // open recordings per uid
+	conns     map[int]int // open connections per uid
 	buckets   map[int]*bucket
+}
+
+func statFree(dir string) int64 {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return -1
+	}
+	return int64(st.Bavail) * int64(st.Bsize)
+}
+
+func (s *Server) free() int64 {
+	if s.freeBytes != nil {
+		return s.freeBytes(s.LogDir)
+	}
+	return statFree(s.LogDir)
+}
+
+func (s *Server) reserve() int64 {
+	if s.Reserve > 0 {
+		return s.Reserve
+	}
+	return defaultReserve
+}
+
+// usage is the size of one user's recordings.
+func usage(dir string) int64 {
+	var n int64
+	filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	return n
 }
 
 type bucket struct {
@@ -78,8 +129,8 @@ type bucket struct {
 	last   time.Time
 }
 
-// allowLog reports whether uid may write another audit line now.
-func (s *Server) allowLog(uid int) bool {
+// allow reports whether uid may make another request now.
+func (s *Server) allow(uid int) bool {
 	rate, burst := s.LogRate, s.LogBurst
 	if rate <= 0 {
 		rate = defaultLogRate
@@ -160,12 +211,38 @@ func peer(c *net.UnixConn) (uid, pid int, name string, err error) {
 	return int(cred.Uid), int(cred.Pid), u.Username, nil
 }
 
+func (s *Server) connect(uid int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns == nil {
+		s.conns = map[int]int{}
+	}
+	if s.conns[uid] >= maxConnsPerUser {
+		return false
+	}
+	s.conns[uid]++
+	return true
+}
+
+func (s *Server) disconnect(uid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns[uid]--; s.conns[uid] <= 0 {
+		delete(s.conns, uid)
+	}
+}
+
 func (s *Server) handle(c *net.UnixConn) {
 	defer c.Close()
 	uid, pid, name, err := peer(c)
 	if err != nil {
 		return
 	}
+	if !s.connect(uid) {
+		reply(c, errors.New("too many connections; slow down"))
+		return
+	}
+	defer s.disconnect(uid)
 	c.SetReadDeadline(time.Now().Add(2 * time.Minute))
 	br := bufio.NewReaderSize(io.LimitReader(c, maxLine), maxLine)
 	line, err := br.ReadBytes('\n')
@@ -175,6 +252,10 @@ func (s *Server) handle(c *net.UnixConn) {
 	var req Request
 	if err := json.Unmarshal(line, &req); err != nil {
 		reply(c, errors.New("bad request"))
+		return
+	}
+	if !s.allow(uid) {
+		reply(c, errors.New("too many requests; slow down"))
 		return
 	}
 	switch req.Op {
@@ -187,10 +268,6 @@ func (s *Server) handle(c *net.UnixConn) {
 			reply(c, fmt.Errorf("unknown event %q", clean(req.Event, 32)))
 			return
 		}
-		if !s.allowLog(uid) {
-			reply(c, errors.New("too many log requests; slow down"))
-			return
-		}
 		// Refuse if the line can't be written (disk full): the shell then
 		// refuses the session rather than running it unlogged.
 		reply(c, s.audit(name, uid, pid, req.Event, clean(req.Detail, 4096)))
@@ -200,6 +277,11 @@ func (s *Server) handle(c *net.UnixConn) {
 			return
 		}
 		defer s.endRecording(uid)
+		if err := s.roomFor(name); err != nil {
+			s.audit(name, uid, pid, "record", "refused: "+err.Error())
+			reply(c, err)
+			return
+		}
 		f, path, err := s.openRecording(name, pid, req.Detail)
 		if err != nil {
 			reply(c, err)
@@ -335,16 +417,38 @@ func (s *Server) openRecording(name string, pid int, detail string) (*os.File, s
 	return f, path, nil
 }
 
+// roomFor refuses a new recording when the disk is nearly full or the
+// user is over their quota.
+func (s *Server) roomFor(name string) error {
+	if free := s.free(); free >= 0 && free < s.reserve() {
+		return errors.New("log disk nearly full; recordings are paused")
+	}
+	quota := s.UserQuota
+	if quota <= 0 {
+		quota = defaultUserQuota
+	}
+	if usage(filepath.Join(s.LogDir, "sessions", name)) >= quota {
+		return fmt.Errorf("recordings for %s are over their quota; ask an admin to archive them", name)
+	}
+	return nil
+}
+
 // copyCast writes an asciinema v2 file (replay with `asciinema play`).
 func (s *Server) copyCast(f *os.File, r io.Reader) {
 	start := time.Now()
 	buf := make([]byte, 32<<10)
-	var total int64
+	var total, checked int64
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			total += int64(n)
-			if total > maxRecording {
+			full := false
+			if total-checked >= 1<<20 { // look at the disk once a MiB
+				checked = total
+				free := s.free()
+				full = free >= 0 && free < s.reserve()
+			}
+			if total > maxRecording || full {
 				f.WriteString(`[0,"o","\r\n[portash: recording size limit reached]\r\n"]` + "\n")
 				io.Copy(io.Discard, r)
 				return

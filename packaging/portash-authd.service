@@ -27,6 +27,8 @@ RestrictRealtime=yes
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
 UMask=0077
+MemoryMax=256M
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

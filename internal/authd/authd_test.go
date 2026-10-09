@@ -104,3 +104,42 @@ func TestAuditRotates(t *testing.T) {
 		t.Fatalf("audit.log is %d bytes, rotation did not keep it small", fi.Size())
 	}
 }
+
+func TestEveryOpIsRateLimited(t *testing.T) {
+	socket, dir := start(t, &Server{LogRate: 1, LogBurst: 3})
+	for range 20 {
+		VerifyTOTP(socket, "000000") // no secret enrolled: fails, but is audited
+	}
+	if n := strings.Count(readAudit(t, dir), "event=totp"); n > 5 {
+		t.Fatalf("%d totp lines audited, want the burst of about 3", n)
+	}
+}
+
+func TestRecordingQuota(t *testing.T) {
+	s := &Server{UserQuota: 1000}
+	socket, _ := start(t, s)
+	w, err := Record(socket, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write([]byte(strings.Repeat("x", 4000)))
+	w.Close()
+	time.Sleep(200 * time.Millisecond)
+	if w, err := Record(socket, "second"); err == nil {
+		w.Close()
+		t.Fatal("recording allowed over the user's quota")
+	}
+}
+
+func TestRecordingStopsWhenDiskIsNearlyFull(t *testing.T) {
+	s := &Server{freeBytes: func(string) int64 { return 1 << 20 }}
+	socket, dir := start(t, s)
+	if w, err := Record(socket, "x"); err == nil {
+		w.Close()
+		t.Fatal("recording started with the disk nearly full")
+	}
+	// The refusal itself is still audited: audit lines keep the reserve.
+	if !strings.Contains(readAudit(t, dir), "recordings are paused") {
+		t.Fatal("refusal not audited")
+	}
+}
