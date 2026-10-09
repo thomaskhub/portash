@@ -54,6 +54,10 @@ Gateway (on each VM, or one host in front of a Vabbit VPN):
           make a token anywhere, with no state directory: the token goes to
           FILE (new, mode 0600), only the line with its hash is printed
           (for the VM's tokens file). The token is never printed
+  portash grant [NAME] --device pshd_... --token-file FILE --gateway URL --pin PIN
+          [--ssh-user U] [--host-key FILE] [--totp-file FILE] [--out FILE]
+          one string for the person, to use with "portash join": gateway, pin,
+          token and more. It holds the token, so it is a secret
   portash token ls|rm NAME [--dir DIR]
   portash invite NAME --gateway https://HOST [--ssh-user USER] [--ttl 1h] [--dir DIR]
           print an invite for one laptop (works once), for "portash join"
@@ -78,9 +82,11 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
           TOTP check for sudo via pam_exec (see README)
 
 Laptop:
-  portash join FILE|CODE...
-          set this laptop up from an invite: device key, gateway, host key,
-          ssh config and the TOTP QR code; then the admin approves it
+  portash join FILE|CODE|GRANT... [--replace]
+          set this laptop up from an invite (device key, gateway, host key,
+          ssh config, TOTP QR code; then the admin approves it) or from a
+          grant (no network, no approval; needs the device key your admin
+          made the token for; --replace to swap an existing gateway)
   portash device
           print this laptop's device key (send it to the admin)
   portash login [NAME] [--gateway HOST:443|https://HOST] --pin sha256:...[,...] [--network CIDR]
@@ -130,6 +136,8 @@ func main() {
 		err = cmdDevice()
 	case "join":
 		err = cmdJoin(ctx, args)
+	case "grant":
+		err = cmdGrant(args)
 	case "login":
 		err = cmdLogin(args)
 	case "logout":
