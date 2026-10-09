@@ -15,3 +15,5 @@ func lockFile(*os.File) (func(), error) {
 	mu.Lock()
 	return mu.Unlock, nil
 }
+
+const noFollow = 0

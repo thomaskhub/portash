@@ -3,17 +3,17 @@ Description=portash authd (TOTP checks, audit log, session recordings)
 Before=ssh.service
 
 [Service]
-ExecStart=/usr/local/bin/portash authd --socket /run/portash/authd.sock --totp-dir /var/lib/portash/totp --log-dir /var/log/portash
+ExecStart=/usr/local/bin/portash authd --socket /run/portash/authd.sock --totp-dir /var/lib/portash-authd/totp --log-dir /var/log/portash
 Restart=always
 RuntimeDirectory=portash
 RuntimeDirectoryMode=0755
-StateDirectory=portash
+StateDirectory=portash-authd
 StateDirectoryMode=0700
 LogsDirectory=portash
 LogsDirectoryMode=0700
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/portash /var/log/portash /run/portash
+ReadWritePaths=/var/lib/portash-authd /var/log/portash /run/portash
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes

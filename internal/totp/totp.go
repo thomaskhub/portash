@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"portash/internal/fsown"
 	"regexp"
 	"strings"
 	"time"
@@ -117,6 +118,9 @@ func (s Store) Enroll(user, issuer string) (string, error) {
 	if err := os.Chmod(s.Dir, 0o700); err != nil {
 		return "", err
 	}
+	if err := fsown.LikeParent(s.Dir); err != nil {
+		return "", err
+	}
 	secret := make([]byte, 20)
 	if _, err := rand.Read(secret); err != nil {
 		return "", err
@@ -151,14 +155,14 @@ func (s Store) Import(user, secret string) error {
 	if err := os.Chmod(s.Dir, 0o700); err != nil {
 		return err
 	}
+	if err := fsown.LikeParent(s.Dir); err != nil {
+		return err
+	}
 	return s.write(p, user, strings.TrimRight(secret, "="))
 }
 
 func (s Store) write(p, user, enc string) error {
-	if err := os.WriteFile(p, []byte(enc+"\n"), 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(p, 0o600); err != nil {
+	if err := fsown.WriteFile(p, []byte(enc+"\n"), 0o600); err != nil {
 		return err
 	}
 	sp, _ := s.path(user, ".state")
@@ -208,11 +212,12 @@ func (s Store) Check(user, code string) error {
 	}
 	sp, _ := s.path(user, ".state")
 	lp, _ := s.path(user, ".lock")
-	lf, err := os.OpenFile(lp, os.O_RDWR|os.O_CREATE, 0o600)
+	lf, err := os.OpenFile(lp, os.O_RDWR|os.O_CREATE|noFollow, 0o600)
 	if err != nil {
 		return err
 	}
 	defer lf.Close()
+	fsown.LikeParent(lp)
 	unlock, err := lockFile(lf)
 	if err != nil {
 		return err
@@ -270,6 +275,9 @@ func writeState(path string, st state) error {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := fsown.LikeParent(tmp.Name()); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)

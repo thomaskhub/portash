@@ -17,6 +17,7 @@ if [ "${1:-}" = --remove ]; then
   rm -f /etc/systemd/system/portash-gateway.service /etc/systemd/system/portash-quicktunnel.service
   systemctl daemon-reload
   rm -rf /var/lib/portash /usr/local/bin/portash /usr/local/bin/cloudflared
+  userdel portash 2>/dev/null || true
   echo "removed portash, the quick tunnel and their state"
   exit 0
 fi
@@ -26,7 +27,9 @@ DEVICE=${2:?usage: try-vm.sh PATH-TO-PORTASH pshd_DEVICE-KEY}
 case "$DEVICE" in pshd_*) ;; *) echo "the second argument is the pshd_... key from 'portash device'"; exit 1 ;; esac
 
 install -m 755 "$BIN" /usr/local/bin/portash
-mkdir -p /var/lib/portash && chmod 700 /var/lib/portash
+id portash >/dev/null 2>&1 || useradd --system --home-dir /var/lib/portash --shell /usr/sbin/nologin portash
+install -d -o portash -g portash -m 700 /var/lib/portash
+ERR=$(mktemp); trap 'rm -f "$ERR"' EXIT
 
 # cloudflared, pinned to one release and checked against its SHA-256 (taken
 # from the GitHub release download when this script was written).
@@ -48,9 +51,9 @@ fi
 
 # A token for this laptop, and a TOTP secret for the daily unlock.
 portash token rm tester --dir /var/lib/portash >/dev/null 2>&1 || true
-TOKEN=$(portash token add tester --device "$DEVICE" --ttl 168h --dir /var/lib/portash 2>/tmp/portash.err) || { cat /tmp/portash.err; exit 1; }
+TOKEN=$(portash token add tester --device "$DEVICE" --ttl 168h --dir /var/lib/portash 2>"$ERR") || { cat "$ERR"; exit 1; }
 portash totp rm tester --unlock --dir /var/lib/portash >/dev/null 2>&1 || true
-URI=$(portash totp enroll tester --unlock --dir /var/lib/portash 2>/tmp/portash.err) || { cat /tmp/portash.err; exit 1; }
+URI=$(portash totp enroll tester --unlock --dir /var/lib/portash 2>"$ERR") || { cat "$ERR"; exit 1; }
 PIN=$(portash fingerprint --dir /var/lib/portash)
 
 cat >/etc/systemd/system/portash-gateway.service <<'UNIT'
@@ -63,6 +66,8 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --dir /var/lib/portash --require-unlock \
     --listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
 Restart=on-failure
+User=portash
+Group=portash
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/portash

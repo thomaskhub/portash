@@ -222,6 +222,9 @@ func cmdGateway(ctx context.Context, args []string) error {
 		return errors.New("nothing to listen on: set --listen and/or --tunnel-listen")
 	}
 	logger.Printf("portash gateway %s, network %s, ports %s, pin %s", version, prefix, *ports, pin.Of(leaf))
+	if os.Geteuid() == 0 {
+		logger.Printf("warning: running as root; run the gateway as its own user (see packaging/portash-gateway.service)")
+	}
 	var servers []*http.Server
 	errc := make(chan error, 3)
 	if *listen != "" {

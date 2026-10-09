@@ -15,3 +15,6 @@ func lockFile(f *os.File) (func(), error) {
 	}
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }, nil
 }
+
+// noFollow keeps root from opening a lock file another user made a symlink.
+const noFollow = syscall.O_NOFOLLOW

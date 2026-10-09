@@ -28,22 +28,31 @@
 
     # The gateway's key, the tokens and the unlock secrets, made on an admin
     # machine before this VM existed (so its pin is already known).
-    - name: portash state folder
+    # The gateway faces the internet, so it runs as its own user, which owns
+    # only /var/lib/portash. The sudo TOTP secrets live with authd instead.
+    - name: portash user for the gateway
+      user: { name: portash, system: true, home: /var/lib/portash, create_home: false, shell: /usr/sbin/nologin }
+
+    - name: Gateway state folder
+      file: { path: "{{ item }}", state: directory, owner: portash, group: portash, mode: "0700" }
+      loop: [/var/lib/portash, /var/lib/portash/unlock]
+
+    - name: authd state folder
       file: { path: "{{ item }}", state: directory, owner: root, group: root, mode: "0700" }
-      loop: [/var/lib/portash, /var/lib/portash/unlock, /var/lib/portash/totp]
+      loop: [/var/lib/portash-authd, /var/lib/portash-authd/totp]
 
     - name: Gateway key and certificate (one pair per VM)
-      copy: { src: "{{ vm_dir }}/{{ item.f }}", dest: "/var/lib/portash/{{ item.f }}", owner: root, group: root, mode: "{{ item.m }}" }
+      copy: { src: "{{ vm_dir }}/{{ item.f }}", dest: "/var/lib/portash/{{ item.f }}", owner: portash, group: portash, mode: "{{ item.m }}" }
       loop:
         - { f: gateway.key, m: "0600" }
         - { f: gateway.crt, m: "0644" }
       notify: restart portash-gateway
 
     - name: Tokens (shared by every VM; the gateway rereads it by itself)
-      copy: { src: "{{ secrets }}/people/tokens", dest: /var/lib/portash/tokens, owner: root, group: root, mode: "0600" }
+      copy: { src: "{{ secrets }}/people/tokens", dest: /var/lib/portash/tokens, owner: portash, group: portash, mode: "0600" }
 
     - name: Daily unlock secrets (shared by every VM)
-      copy: { src: "{{ secrets }}/people/unlock/", dest: /var/lib/portash/unlock/, owner: root, group: root, mode: "0600" }
+      copy: { src: "{{ secrets }}/people/unlock/", dest: /var/lib/portash/unlock/, owner: portash, group: portash, mode: "0600" }
 
     # sshd: localhost only, keys only, and a host key signed by your host CA,
     # so laptops never have to accept a host key on first sight.
@@ -82,7 +91,7 @@
     # sudo asks for a TOTP code, every time (README, "TOTP sudo"). The secret
     # was made with: portash totp enroll devops --totp-dir portash-secrets/totp
     - name: sudo TOTP secret for devops
-      copy: { src: "{{ secrets }}/totp/devops.secret", dest: /var/lib/portash/totp/devops.secret, owner: root, group: root, mode: "0600" }
+      copy: { src: "{{ secrets }}/totp/devops.secret", dest: /var/lib/portash-authd/totp/devops.secret, owner: root, group: root, mode: "0600" }
 
     - name: devops may sudo, with a code each time
       copy:

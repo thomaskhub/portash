@@ -109,10 +109,16 @@ Do this as root on every VM, with a second way in (the cloud console) until
 you have tested it. The examples use `vm1.example.com`; pick one hostname per
 VM.
 
-**1. Install portash and keep sshd on localhost.**
+**1. Install portash, give the gateway its own user, and keep sshd on
+localhost.** The gateway faces the internet, so it runs as the `portash`
+user, which owns only `/var/lib/portash`; it can't read the sudo TOTP
+secrets (in `/var/lib/portash-authd`), the SSH host keys or `/etc/shadow`.
+Files that `sudo portash token add` and friends write there take that owner.
 
 ```sh
 install -m 755 portash-linux /usr/local/bin/portash
+useradd --system --home-dir /var/lib/portash --shell /usr/sbin/nologin portash
+install -d -o portash -g portash -m 700 /var/lib/portash
 echo "ListenAddress 127.0.0.1" > /etc/ssh/sshd_config.d/portash.conf
 echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/portash.conf
 systemctl restart ssh
@@ -134,6 +140,11 @@ ssh-keygen -s host_ca -I vm1 -h -n vm1.example.com -V +52w /etc/ssh/ssh_host_ed2
 echo "HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub" >> /etc/ssh/sshd_config.d/portash.conf
 systemctl restart ssh
 ```
+
+Upgrading a VM set up before the gateway had its own user: run the
+`useradd` line above, `mkdir -p /var/lib/portash-authd && mv
+/var/lib/portash/totp /var/lib/portash-authd/`, and install both units
+again; systemd hands `/var/lib/portash` to the new user on start.
 
 **4. Start authd** (TOTP checks, audit log, session recordings):
 
@@ -621,7 +632,9 @@ connections directly.
 For the lowest latency, or a VM with a public IP and nothing else on 443, the
 gateway can serve TLS itself. In `portash-gateway.service`, replace
 `--listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP`
-with `--listen :443` (or keep both), set `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and remove the two `IPAddress` lines (they confine the
+with `--listen :443` (or keep both), set `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` (the `portash` user may then bind
+443, and nothing else), remove the two `IPAddress` lines (they confine the
 gateway to this host), open TCP 443 in the firewall, and log
 laptops in with the host name instead of a URL:
 

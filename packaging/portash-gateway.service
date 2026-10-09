@@ -11,9 +11,12 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/portash gateway --network 127.0.0.1/32 --ports 22 --dir /var/lib/portash --require-unlock \
     --listen "" --tunnel-listen 127.0.0.1:8080 --tunnel-ip-header CF-Connecting-IP
 Restart=on-failure
-# Runs as root so `sudo portash token add` files are readable, but with every
-# capability removed, and with no network except this host: in per-VM mode it
-# only talks to cloudflared and to its own sshd on localhost.
+# Runs as its own user (useradd --system portash), which owns only
+# /var/lib/portash, with every capability removed and no network except this
+# host: in per-VM mode it only talks to cloudflared and its own sshd. Files
+# that `sudo portash token add` writes there take the folder's owner.
+User=portash
+Group=portash
 StateDirectory=portash
 StateDirectoryMode=0700
 CapabilityBoundingSet=
@@ -23,6 +26,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/portash
 ProtectHome=yes
+# The sudo TOTP secrets and the audit log are none of its business.
+InaccessiblePaths=-/var/lib/portash-authd -/var/log/portash
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

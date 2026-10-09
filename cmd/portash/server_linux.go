@@ -25,7 +25,9 @@ import (
 	"portash/internal/totp"
 )
 
-const defaultTOTPDir = "/var/lib/portash/totp"
+// defaultTOTPDir holds the sudo and session TOTP secrets. It is outside the
+// gateway's /var/lib/portash, which the gateway's own user owns.
+const defaultTOTPDir = "/var/lib/portash-authd/totp"
 
 type multiFlag []string
 

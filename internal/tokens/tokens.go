@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"portash/internal/fsown"
 	"regexp"
 	"strings"
 	"sync"
@@ -144,6 +145,9 @@ func Save(path string, entries []Entry) error {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := fsown.LikeParent(tmp.Name()); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
