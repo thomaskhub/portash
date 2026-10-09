@@ -19,9 +19,12 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A supported Go with current security fixes in its standard library
+      # (go.mod only sets the oldest Go that can build portash). Keep in step
+      # with the lint job in ci.yml.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
       - run: go test ./...
       - name: Build
         run: |
