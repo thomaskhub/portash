@@ -55,7 +55,9 @@ type Config struct {
 	ResumeWindow time.Duration
 	// Unlock, when set, makes every stream need a ticket from a TOTP unlock.
 	Unlock *Unlock
-	Log    *log.Logger
+	// InviteDir, when set, lets laptops redeem invites (portash join).
+	InviteDir string
+	Log       *log.Logger
 	// Dial is overridable for tests.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 }
@@ -478,12 +480,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	remote, ip := r.RemoteAddr, clientIP(r)
 
-	if r.URL.Path == UnlockPath && r.Method == http.MethodPost {
+	if (r.URL.Path == UnlockPath || r.URL.Path == JoinPath) && r.Method == http.MethodPost {
 		if g.fails.blocked(ip) {
 			ignore(w, r)
 			return
 		}
-		g.serveUnlock(w, r, ip)
+		if r.URL.Path == JoinPath {
+			g.serveJoin(w, r, ip)
+		} else {
+			g.serveUnlock(w, r, ip)
+		}
 		return
 	}
 	// Anything that isn't a well-formed, authenticated upgrade looks like a

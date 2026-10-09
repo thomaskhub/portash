@@ -392,6 +392,57 @@ func Unlock(ctx context.Context, o Options, code string) (string, time.Time, err
 	return lines[0], exp, nil
 }
 
+// JoinResult is what the gateway hands a laptop that redeemed an invite.
+type JoinResult struct {
+	Token   string // psh_..., works once the admin approves
+	TOTPURI string // otpauth:// link for the daily unlock, or "" if one exists
+	Code    string // confirmation code the admin approves
+	Name    string // the token's name on the gateway
+}
+
+// Join redeems an invite secret for this device (see gateway.serveJoin).
+// o needs Gateway, Pins and Device; it has no token yet.
+func Join(ctx context.Context, o Options, secret string) (JoinResult, error) {
+	var res JoinResult
+	tc, ekm, err := handshake(ctx, o)
+	if err != nil {
+		return res, err
+	}
+	defer tc.Close()
+	pub := o.Device.Public().(ed25519.PublicKey)
+	sig := ed25519.Sign(o.Device, gateway.SignedMessage(ekm, gateway.JoinTarget))
+	req := "POST " + gateway.JoinPath + " HTTP/1.1\r\n" +
+		"Host: " + o.hostPort() + "\r\n" +
+		gateway.InviteHeader + ": " + secret + "\r\n" +
+		gateway.DeviceHeader + ": pshd_" + base64.RawURLEncoding.EncodeToString(pub) + "\r\n" +
+		gateway.SigHeader + ": " + base64.RawURLEncoding.EncodeToString(sig) + "\r\n" +
+		"Content-Length: 0\r\nConnection: close\r\n\r\n"
+	if _, err := io.WriteString(tc, req); err != nil {
+		return res, err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
+	if err != nil {
+		return res, err
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return res, errors.New("invite not accepted: wrong, already used, or this gateway doesn't take invites")
+	default:
+		return res, errors.New(strings.TrimSpace(string(body)))
+	}
+	f := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
+	if len(f) != 4 {
+		return res, errors.New("unexpected join response")
+	}
+	res = JoinResult{Token: f[0], TOTPURI: f[1], Code: f[2], Name: f[3]}
+	if res.TOTPURI == "-" {
+		res.TOTPURI = ""
+	}
+	return res, nil
+}
+
 // hostPort is the gateway's host:port, also for a tunnel URL.
 func (o *Options) hostPort() string {
 	u, err := url.Parse(o.Gateway)

@@ -121,17 +121,36 @@ func (s Store) Enroll(user, issuer string) (string, error) {
 	if err := fsown.LikeParent(s.Dir); err != nil {
 		return "", err
 	}
+	enc, err := NewSecret()
+	if err != nil {
+		return "", err
+	}
+	if err := s.write(p, user, enc); err != nil {
+		return "", err
+	}
+	return URI(enc, user, issuer), nil
+}
+
+// NewSecret returns a random 160-bit secret, base32 without padding.
+func NewSecret() (string, error) {
 	secret := make([]byte, 20)
 	if _, err := rand.Read(secret); err != nil {
 		return "", err
 	}
-	enc := b32.EncodeToString(secret)
-	if err := s.write(p, user, enc); err != nil {
-		return "", err
-	}
+	return b32.EncodeToString(secret), nil
+}
+
+// URI is the otpauth:// link authenticator apps import (as text or QR code).
+func URI(secret, user, issuer string) string {
 	label := url.PathEscape(issuer + ":" + user)
-	q := url.Values{"secret": {enc}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
-	return "otpauth://totp/" + label + "?" + q.Encode(), nil
+	q := url.Values{"secret": {secret}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
+	return "otpauth://totp/" + label + "?" + q.Encode()
+}
+
+// Has reports whether user has a secret.
+func (s Store) Has(user string) bool {
+	_, err := s.secret(user)
+	return err == nil
 }
 
 // Import stores an existing secret (base32, or an otpauth:// URI), so one

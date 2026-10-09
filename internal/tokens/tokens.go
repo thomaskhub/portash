@@ -175,11 +175,47 @@ func Add(path, name string, device ed25519.PublicKey, ttl time.Duration) (string
 	if err != nil {
 		return "", err
 	}
-	e := Entry{Name: name, Hash: sha256.Sum256([]byte(tok)), Device: device}
+	return tok, addEntry(path, entries, name, sha256.Sum256([]byte(tok)), device, ttl)
+}
+
+// AddHash is Add for a token made elsewhere, of which only the hash is
+// known (an approved `portash join`).
+func AddHash(path, name string, hash [32]byte, device ed25519.PublicKey, ttl time.Duration) error {
+	if !ValidName(name) {
+		return errors.New("name must be 1-64 chars of letters, digits, . _ @ -")
+	}
+	if len(device) != ed25519.PublicKeySize {
+		return errors.New("a device key is required")
+	}
+	entries, err := Load(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return fmt.Errorf("token %q already exists; remove it first", name)
+		}
+	}
+	return addEntry(path, entries, name, hash, device, ttl)
+}
+
+func addEntry(path string, entries []Entry, name string, hash [32]byte, device ed25519.PublicKey, ttl time.Duration) error {
+	e := Entry{Name: name, Hash: hash, Device: device}
 	if ttl > 0 {
 		e.Expires = time.Now().Add(ttl).UTC().Truncate(time.Second)
 	}
-	return tok, Save(path, append(entries, e))
+	return Save(path, append(entries, e))
+}
+
+// Exists reports whether a token named name is in the file at path.
+func Exists(path, name string) bool {
+	entries, _ := Load(path)
+	for _, e := range entries {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func Remove(path, name string) error {
@@ -209,6 +245,9 @@ type Store struct {
 	sum     [32]byte
 	entries []Entry
 }
+
+// Path is the token file the store reads.
+func (s *Store) Path() string { return s.path }
 
 func NewStore(path string) (*Store, error) {
 	s := &Store{path: path, now: time.Now}

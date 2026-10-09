@@ -227,7 +227,29 @@ only needs outbound HTTPS.
 
 ### On each laptop (Linux or Windows; macOS builds but is untested)
 
-Put `portash` on your `PATH`, then:
+Put `portash` on your `PATH`. Your admin sends you an invite (a small file,
+or one long `pshi1.` line) per VM. Then:
+
+```sh
+portash join invite.txt         # or: portash join pshi1.eyJn...   (several at once is fine)
+```
+
+That makes the laptop's device key if it has none, saves the gateway and its
+pin, trusts the VM's SSH host key, writes `~/.ssh/portash.conf` and shows a
+QR code: scan it into any authenticator app. It ends with a confirmation code
+like `K4F2-9QXM`. Tell your admin that code (a call or a chat is fine; it isn't
+secret). Once they've approved it:
+
+```sh
+portash unlock                  # the code from the authenticator app
+ssh vm1.example.com
+```
+
+Nothing works before the approval, so an invite someone else got hold of is
+useless to them: their laptop shows a different code, and your admin won't
+approve it.
+
+**Without an invite**, set things up by hand:
 
 ```sh
 portash device                  # once; prints pshd_..., send it to your admin
@@ -331,6 +353,29 @@ $ sudo systemctl restart nginx
 All of this runs as root on the VM.
 
 ### Add a person
+
+With an invite (they need nothing from you but one file, then one code from them):
+
+```sh
+portash invite alice-laptop --gateway https://vm1.example.com --ssh-user alice > alice.txt
+# send alice.txt (or its last line); it works once, for an hour (--ttl)
+# Alice runs `portash join alice.txt` and tells you the code it shows:
+portash invite approve alice-laptop K4F2-9QXM
+portash invite ls                                   # open invites, laptops waiting
+portash invite rm alice-laptop                      # drop an invite or a waiting laptop
+
+# their SSH key, with a role (below), as before
+echo 'command="portash shell" ssh-ed25519 AAAA... alice' >> /etc/ssh/authorized_keys/alice
+```
+
+`approve` only succeeds if the code matches the device key that joined, so
+if someone else used the invite first, Alice's code won't match: `rm` it and
+make a new one. Approval installs the token (bound to that device key) and,
+with `--require-unlock`, a fresh TOTP secret; if the VM already has one for
+that name (imported, see below), it keeps it and Alice's existing
+authenticator entry works. A laptop not approved within 24 hours is dropped.
+
+By hand:
 
 ```sh
 # their device key from `portash device`; prints a psh_ token, shown once

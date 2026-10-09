@@ -33,6 +33,7 @@ type profile struct {
 	Pins          []string  `json:"pins,omitempty"`
 	Network       string    `json:"network,omitempty"`
 	Token         string    `json:"token"`
+	User          string    `json:"user,omitempty"` // ssh login, from an invite
 	Ticket        string    `json:"ticket,omitempty"`
 	TicketExpires time.Time `json:"ticketExpires,omitempty"`
 }
@@ -464,8 +465,12 @@ func sshConfigText(c clientConfig, names []string) (string, error) {
 			// Per-VM gateway: it only forwards to its own sshd on localhost.
 			// HostKeyAlias keeps each VM's host key apart even though they
 			// are all 127.0.0.1; sign host certificates with -n NAME.
-			fmt.Fprintf(&b, "Host %s\n    HostName 127.0.0.1\n    HostKeyAlias %s\n    ProxyCommand %s dial --gateway %s %%h %%p\n%s\n",
-				n, n, exe, n, sshCommon)
+			user := ""
+			if p.User != "" {
+				user = "    User " + p.User + "\n"
+			}
+			fmt.Fprintf(&b, "Host %s\n    HostName 127.0.0.1\n    HostKeyAlias %s\n%s    ProxyCommand %s dial --gateway %s %%h %%p\n%s\n",
+				n, n, user, exe, n, sshCommon)
 			continue
 		}
 		fmt.Fprintf(&b, `# Gateway %q into the VPN %s: add one Host block per machine with its

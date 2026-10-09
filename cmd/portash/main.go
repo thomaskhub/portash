@@ -49,6 +49,10 @@ Gateway (on each VM, or one host in front of a Vabbit VPN):
   portash token add NAME --device pshd_... [--ttl 2160h] [--dir DIR]
           print a new psh_ token bound to that device (shown once)
   portash token ls|rm NAME [--dir DIR]
+  portash invite NAME --gateway https://HOST [--ssh-user USER] [--ttl 1h] [--dir DIR]
+          print an invite for one laptop (works once), for "portash join"
+  portash invite ls | approve NAME CODE | rm NAME
+          list invites and laptops waiting; approve one by the code it shows
 
 Server (Linux; in authorized_keys or sshd ForceCommand; see README):
   portash shell [--sandbox] [--write DIR]... [--record=true] [--fail-open]
@@ -68,6 +72,9 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
           TOTP check for sudo via pam_exec (see README)
 
 Laptop:
+  portash join FILE|CODE...
+          set this laptop up from an invite: device key, gateway, host key,
+          ssh config and the TOTP QR code; then the admin approves it
   portash device
           print this laptop's device key (send it to the admin)
   portash login [NAME] [--gateway HOST:443|https://HOST] --pin sha256:...[,...] [--network CIDR]
@@ -101,6 +108,8 @@ func main() {
 		err = cmdFingerprint(args)
 	case "token":
 		err = cmdToken(args)
+	case "invite":
+		err = cmdInvite(args)
 	case "restrict":
 		err = cmdRestrict(args)
 	case "shell":
@@ -113,6 +122,8 @@ func main() {
 		err = cmdPAMTOTP(args)
 	case "device":
 		err = cmdDevice()
+	case "join":
+		err = cmdJoin(ctx, args)
 	case "login":
 		err = cmdLogin(args)
 	case "logout":
@@ -206,7 +217,8 @@ func cmdGateway(ctx context.Context, args []string) error {
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	gcfg := gateway.Config{Network: prefix, Ports: allowed, Tokens: store, MaxStreams: *maxStreams,
-		MaxConns: *maxConns, IdleTimeout: *idle, MaxSession: *maxSession, ResumeWindow: *resumeWindow, Log: logger}
+		MaxConns: *maxConns, IdleTimeout: *idle, MaxSession: *maxSession, ResumeWindow: *resumeWindow, Log: logger,
+		InviteDir: filepath.Join(*dir, "invites")}
 	if *requireUnlock {
 		gcfg.Unlock = &gateway.Unlock{
 			TOTP:      totp.Store{Dir: filepath.Join(*dir, "unlock"), ValidName: tokens.ValidName},
