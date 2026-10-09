@@ -32,6 +32,7 @@ func cmdInvite(args []string) error {
 	ttl := fs.Duration("ttl", time.Hour, "how long the invite can be used")
 	tokenTTL := fs.Duration("token-ttl", 90*24*time.Hour, "token lifetime once approved (0 = never expires)")
 	hostKey := fs.String("host-key", "/etc/ssh/ssh_host_ed25519_key.pub", "SSH host key the laptop should trust (\"\" = none)")
+	quiet := fs.Bool("quiet", false, "approve: print nothing on success (errors are always shown)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -42,7 +43,13 @@ func cmdInvite(args []string) error {
 	case len(pos) == 1 && pos[0] == "ls":
 		return inviteList(invDir)
 	case len(pos) == 3 && pos[0] == "approve":
-		return inviteApprove(*dir, invDir, pos[1], pos[2])
+		if err := inviteApprove(*dir, invDir, pos[1], pos[2]); err != nil {
+			return err
+		}
+		if !*quiet {
+			fmt.Fprintf(os.Stderr, "Approved %s. They can now run `portash unlock` and ssh in.\n", pos[1])
+		}
+		return nil
 	case len(pos) == 2 && pos[0] == "rm":
 		n := invite.Remove(invDir, pos[1])
 		fmt.Fprintf(os.Stderr, "Removed %d invite(s) or pending laptop(s) for %s\n", n, pos[1])
@@ -178,6 +185,5 @@ func inviteApprove(dir, invDir, name, code string) error {
 			return err
 		}
 	}
-	fmt.Fprintf(os.Stderr, "Approved %s. They can now run `portash unlock` and ssh in.\n", p.Name)
 	return nil
 }

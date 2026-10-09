@@ -138,6 +138,30 @@ func TakePending(dir, name string, now time.Time) (Pending, error) {
 
 // List returns open invites and pending laptops, oldest first, dropping
 // expired ones.
+// Count says how many invites are open and how many laptops wait for
+// approval, without changing anything (List also deletes what has expired).
+func Count(dir string, now time.Time) (open, pending int) {
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(filepath.Base(f), "pending-") {
+			var p Pending
+			if json.Unmarshal(b, &p) == nil && now.Before(p.Expires) {
+				pending++
+			}
+			continue
+		}
+		var i Invite
+		if json.Unmarshal(b, &i) == nil && now.Before(i.Expires) {
+			open++
+		}
+	}
+	return open, pending
+}
+
 func List(dir string, now time.Time) ([]Invite, []Pending) {
 	Cleanup(dir, now)
 	var invs []Invite

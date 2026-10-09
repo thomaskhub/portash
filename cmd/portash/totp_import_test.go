@@ -106,3 +106,14 @@ func TestTotpImportWithoutIfMissingStillReplaces(t *testing.T) {
 		t.Fatalf("plain import no longer replaces: %q", got)
 	}
 }
+
+func TestTotpImportQuietPrintsNothingButStillFails(t *testing.T) {
+	dir := t.TempDir()
+	out, err := importAs(t, dir, secretA, "--quiet")
+	if err != nil || out != "" {
+		t.Fatalf("quiet import printed %q, %v", out, err)
+	}
+	if _, err := importAs(t, dir, "not a secret", "--quiet"); err == nil {
+		t.Fatal("--quiet hid an error")
+	}
+}
