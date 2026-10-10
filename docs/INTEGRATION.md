@@ -83,11 +83,14 @@ Notes:
 
 ## Everyday changes (after the first run)
 
-* **Add a person:** `portash token new --out alice.token ...` on their side, then deliver the line as
-  `/var/lib/portash/tokens.d/NAME` (one file per person). The gateway picks it up within seconds, no restart.
+* **Add a person:** on your admin machine, with their device key (`portash device` on their laptop):
+  `portash token new alice-laptop --device pshd_... --ttl 2160h --out alice.token`. It prints one line
+  (`name hash device=... expires=...`, safe to keep in a repository); deliver it to the VM as
+  `/var/lib/portash/tokens.d/alice-laptop`, one file per person, and give Alice `alice.token` once.
+  The gateway picks the file up within seconds, no restart. Details: README, "Tokens from files".
 * **Remove a person:** delete their `tokens.d` file. New connections are refused at once; open ones are cut in about 5 s.
-* **Renew a token:** write the new line over the file; set `--ttl` on creation (`0` never expires).
-* **Health:** `portash gateway-status --json` on the VM (counts of tokens and unlock secrets, pin, expiry).
+* **Renew a token:** make a new one with `token new` and write the new line over the file. `--ttl 0` never expires; prefer a lifetime.
+* **Health:** `portash gateway-status [--json]` on the VM (what the gateway folder holds, tokens and unlock secrets, the pin). Fields: see README, "What is in a gateway's folder".
 
 ## Gotchas
 
