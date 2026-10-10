@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"portash/internal/invite"
 	"portash/internal/pin"
 	"portash/internal/qr"
+	"portash/internal/tokens"
+	"portash/internal/totp"
 )
 
 // cmdJoin sets this laptop up from invites (files or pasted codes): it makes
@@ -21,10 +24,21 @@ import (
 // trusts the VM's SSH host key, writes the ssh config and shows the TOTP QR
 // code. The VM's admin then approves the confirmation code it prints.
 func cmdJoin(ctx context.Context, args []string) error {
+	replace := false
+	var rest []string
+	for _, a := range args {
+		if a == "--replace" {
+			replace = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	args = rest
 	if len(args) == 0 {
-		return errors.New("usage: portash join FILE|CODE... (the invite your admin sent)")
+		return errors.New("usage: portash join FILE|CODE|GRANT... [--replace] (the invite or grant your admin sent)")
 	}
 	var codes []invite.Code
+	var grants []invite.Grant
 	for _, a := range args {
 		if strings.HasPrefix(a, invite.CodePrefix) {
 			c, err := invite.ParseCode(a)
@@ -32,6 +46,14 @@ func cmdJoin(ctx context.Context, args []string) error {
 				return err
 			}
 			codes = append(codes, c)
+			continue
+		}
+		if strings.HasPrefix(a, invite.GrantPrefix) {
+			g, err := invite.ParseGrant(a)
+			if err != nil {
+				return err
+			}
+			grants = append(grants, g)
 			continue
 		}
 		f, err := os.Open(a)
@@ -43,21 +65,37 @@ func cmdJoin(ctx context.Context, args []string) error {
 		sc.Buffer(make([]byte, 64<<10), 64<<10)
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
-			if !strings.HasPrefix(line, invite.CodePrefix) {
-				continue
+			switch {
+			case strings.HasPrefix(line, invite.CodePrefix):
+				c, err := invite.ParseCode(line)
+				if err != nil {
+					f.Close()
+					return fmt.Errorf("%s: %w", a, err)
+				}
+				codes = append(codes, c)
+				n++
+			case strings.HasPrefix(line, invite.GrantPrefix):
+				g, err := invite.ParseGrant(line)
+				if err != nil {
+					f.Close()
+					return fmt.Errorf("%s: %w", a, err)
+				}
+				grants = append(grants, g)
+				n++
 			}
-			c, err := invite.ParseCode(line)
-			if err != nil {
-				f.Close()
-				return fmt.Errorf("%s: %w", a, err)
-			}
-			codes = append(codes, c)
-			n++
 		}
 		f.Close()
 		if n == 0 {
-			return fmt.Errorf("%s has no invite code in it", a)
+			return fmt.Errorf("%s has no invite code or grant in it", a)
 		}
+	}
+	if len(grants) > 0 {
+		if err := joinGrants(grants, replace); err != nil {
+			return err
+		}
+	}
+	if len(codes) == 0 {
+		return nil
 	}
 	for _, c := range codes {
 		if !profileRe.MatchString(c.Name) || !pin.Valid(c.Pin) || (c.User != "" && !sshUserRe.MatchString(c.User)) {
@@ -80,18 +118,8 @@ func cmdJoin(ctx context.Context, args []string) error {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", c.Name, err)
 			continue
 		}
-		cfg, err := loadConfig()
-		if err != nil {
+		if err := saveProfile(c.Name, &profile{Gateway: c.Gateway, Pins: []string{c.Pin}, Token: res.Token, User: c.User}, c.HostKey); err != nil {
 			return err
-		}
-		cfg.Gateways[c.Name] = &profile{Gateway: c.Gateway, Pins: []string{c.Pin}, Token: res.Token, User: c.User}
-		if err := saveConfig(cfg); err != nil {
-			return err
-		}
-		if c.HostKey != "" {
-			if err := trustHostKey(c.Name, c.HostKey); err != nil {
-				return err
-			}
 		}
 		fmt.Fprintf(os.Stderr, "\n%s: joined as %s.\n", c.Name, res.Name)
 		if res.TOTPURI != "" {
@@ -121,6 +149,76 @@ func cmdJoin(ctx context.Context, args []string) error {
 	if failed > 0 {
 		return fmt.Errorf("%d of %d invites not used", failed, len(codes))
 	}
+	return nil
+}
+
+// saveProfile stores the gateway under name and trusts the VM's SSH host key:
+// the steps every way of joining ends with.
+func saveProfile(name string, p *profile, hostKey string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.Gateways[name] = p
+	if err := saveConfig(cfg); err != nil {
+		return err
+	}
+	if hostKey != "" {
+		return trustHostKey(name, hostKey)
+	}
+	return nil
+}
+
+// joinGrants sets this laptop up from grants: no network, no approval. The
+// token in a grant works only with the device key it was made for, so the
+// laptop must already have that key (portash device); a grant never makes a
+// new one, which would give a setup that silently does not work. A grant also
+// never replaces a gateway you already have under that name with a different
+// one (a wrong or hostile grant would redirect you), unless you say --replace.
+func joinGrants(grants []invite.Grant, replace bool) error {
+	dev, err := deviceKey(false)
+	if err != nil {
+		return fmt.Errorf("%w\nA grant is made for your device key: run `portash device`, give that key to your admin, and use the grant they make for it", err)
+	}
+	mine := tokens.FormatDevice(dev.Public().(ed25519.PublicKey))
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	for _, g := range grants {
+		if g.Device != mine {
+			return fmt.Errorf("the grant for %s was made for another laptop (device key %s...), not this one (%s...)", g.Name, g.Device[:14], mine[:14])
+		}
+		if old := cfg.Gateways[g.Name]; old != nil && !replace && (old.Gateway != g.Gateway || len(old.Pins) != 1 || old.Pins[0] != g.Pin) {
+			return fmt.Errorf("%s is already set up with another gateway or pin; if the grant is really meant to replace it, run again with --replace", g.Name)
+		}
+	}
+	for _, g := range grants {
+		if err := saveProfile(g.Name, &profile{Gateway: g.Gateway, Pins: []string{g.Pin}, Token: g.Token, User: g.User}, g.HostKey); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "\n%s: ready.\n", g.Name)
+		if g.TOTP == "" {
+			fmt.Fprintln(os.Stderr, "Your existing authenticator entry for this VM keeps working.")
+			continue
+		}
+		uri := totp.URI(strings.ToUpper(g.TOTP), g.Name, "portash "+g.Name)
+		if term(os.Stderr) {
+			if q, err := qr.Encode(uri); err == nil {
+				fmt.Fprintln(os.Stderr, "Scan this with your authenticator app (the code it shows is for `portash unlock`):")
+				q.WriteTerminal(os.Stderr)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "Authenticator link: %s\n", uri)
+	}
+	cfg, err = loadConfig()
+	if err != nil {
+		return err
+	}
+	if err := writeSSHConfig(cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "\nNo approval needed. Next: portash unlock, then ssh %s\n", grants[0].Name)
 	return nil
 }
 

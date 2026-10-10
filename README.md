@@ -449,6 +449,41 @@ portash token new alice-laptop --device pshd_... --ttl 2160h --out alice.token
   prints `{"name","status"}` where status is `created` or `unchanged`; the
   secret is never printed.
 
+### Hand a person everything in one string (`grant`)
+
+When you made the person's token ahead of time (`portash token new`, above),
+a grant gives them gateway, pin, token and more in one string. No approval and
+no confirmation code are needed: the token only works with the device key it
+was made for.
+
+```sh
+# admin, on any machine; alice-laptop.token comes from `portash token new`
+portash grant --device pshd_... --token-file alice-laptop.token \
+  --gateway https://vm1.example.com --pin sha256:... --ssh-user alice \
+  --host-key /etc/ssh/ssh_host_ed25519_key.pub --out alice.grant
+# optional: --totp-file FILE with the unlock secret in base32, so the grant shows the QR code
+
+# alice, on the laptop that owns that device key
+portash join alice.grant        # or: portash join pshg1.eyJn...
+portash unlock                  # the code from the authenticator app
+ssh vm1.example.com
+```
+
+* **A grant is a secret.** It contains the token, and the unlock secret if you
+  added one. Send it over a channel you trust and delete it afterwards. Someone
+  who reads it still cannot connect without the laptop's private device key.
+* `portash grant` reads the token and the secret from files, never from
+  arguments, and writes with `--out` into a new file (mode 0600, an existing
+  file is never replaced).
+* `portash join` needs the device key the token was made for: run
+  `portash device` first and give that key to your admin. It never makes a key
+  for a grant, and refuses a grant made for another laptop.
+* `join` never silently replaces a gateway you already have under that name
+  with another gateway or pin (a wrong or hostile grant would redirect you);
+  add `--replace` if that is what you want.
+* Invites (above) stay as they are, for people whose device key you do not
+  know yet.
+
 ### Remove a person or a laptop
 
 ```sh
