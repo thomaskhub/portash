@@ -564,6 +564,49 @@ pass/fail checks for the folder, `tokens`, `tokens.d`, the gateway key, the
   `pendingLaptops`, `unlockSecrets`, `checks` (each with `name`, `ok`,
   `detail`).
 
+### Prepare a VM before it exists (`provision`)
+
+This is the default way to give an admin access to a VM that nobody can log in
+to yet (an Ansible or Terraform build with port 22 closed), and it works the
+same for a VM you set up by hand. Everything is prepared on the admin's laptop;
+the VM only applies it. Nobody logs in to the VM to create access.
+
+```sh
+# 1. on the admin's laptop (uses this laptop's device key; makes it if it is missing)
+portash provision create vm1 --dir ./vm1 --gateway https://vm1.example.com --ssh-user alice
+#    makes the gateway key (and its pin), your token, your unlock secret, and
+#    ./vm1/provision.bundle for the VM; shows the unlock QR code once; makes
+#    ./vm1/admin.grant for you. Run it again and nothing is made twice.
+
+# 2. on the VM, at first boot or from your provisioning tool
+portash provision apply provision.bundle        # or: ... apply - < bundle, or PORTASH_PROVISION=...
+#    puts the gateway key and certificate, the token's hash (tokens.d/admin) and the
+#    unlock secret in /var/lib/portash. --dry-run shows what it would do; --json for tools.
+
+# 3. on the admin's laptop, once the tunnel is up
+portash join ./vm1/admin.grant ; portash unlock ; ssh ...
+```
+
+* **`create` is repeatable.** The same folder gives the same key, pin, token and
+  unlock secret. A folder prepared for another device key is refused. Delete
+  files in it only on purpose: the token file is the only copy of your token.
+* **`apply` is repeatable and careful.** It checks the whole bundle first (the
+  key belongs to the certificate, the pin is the certificate's) and writes
+  nothing if anything is wrong. It never replaces a different gateway key
+  (every user's pin would change), keeps an existing unlock secret with its
+  replay and lockout state, and rewrites the token line only if it differs. Its
+  output names items and statuses (`created`, `updated`, `unchanged`) and never
+  a secret.
+* **The bundle is a secret.** It holds the gateway's private key and the unlock
+  secret, but not your token and not your device's private key (the token line
+  holds only the token's hash and the device's public key). Keep it in a
+  secrets store and let the VM fetch it. **Do not template it into Terraform's
+  `user_data`:** user_data is readable through the cloud API and sits in
+  Terraform's state in plain text. The first-boot script in user_data should
+  only contain the fetch command and `portash provision apply -`.
+* **Later changes** (more people, renewals, revocation) are `tokens.d` files or
+  invites, managed by your provisioning tool, not by user_data (which runs once).
+
 ### Roles
 
 Pick one per SSH key in `/etc/ssh/authorized_keys/USER` (or with `Match User` +

@@ -78,6 +78,12 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
   portash gateway-status [--dir DIR] [--json]
           what is in a gateway's state folder: counts and checks, no secrets;
           reads files only. Exit 0 = it could look (failed checks are data)
+  portash provision create VMNAME [--dir DIR] [--user admin] [--ttl 2160h] [--gateway URL] [--ssh-user U]
+          on the admin's laptop: make everything one VM needs (gateway key and pin,
+          token, unlock secret) and one bundle file for the VM; repeatable
+  portash provision apply [BUNDLE|-] [--dir DIR] [--dry-run] [--json]
+          on the VM (first boot, Terraform, Ansible): put the bundle in place;
+          never replaces a different gateway key. The bundle is a secret
   portash authd [--socket PATH] [--totp-dir DIR] [--log-dir DIR]
           root daemon: TOTP checks, audit log, recordings
   portash totp enroll|rm USER [--totp-dir DIR]
@@ -133,6 +139,8 @@ func main() {
 		err = cmdInvite(args)
 	case "gateway-status":
 		err = cmdGatewayStatus(args)
+	case "provision":
+		err = cmdProvision(args)
 	case "restrict":
 		err = cmdRestrict(args)
 	case "shell":
