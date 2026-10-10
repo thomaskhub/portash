@@ -20,6 +20,11 @@ licensed.
 - [Without Cloudflare](#without-cloudflare): direct port 443, Caddy, Traefik, nginx, Vabbit VPN
 - [Reference](#reference), [Develop](#develop), [License](#license)
 
+> **Just want SSH over a Cloudflare tunnel?** Read
+> [docs/INTEGRATION.md](docs/INTEGRATION.md): `provision create`, `provision apply`,
+> Ansible and Terraform examples. The sections on roles, sudo TOTP, recordings and
+> restricted keys below are optional extras.
+
 ## How it works
 
 You type a normal `ssh vm1.example.com`. Your `~/.ssh/config`, written by
