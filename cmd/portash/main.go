@@ -75,11 +75,14 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
           run SSH_ORIGINAL_COMMAND only if FILE allows it
   portash restrict --policy FILE --check 'CMD'
           show whether CMD would be allowed
+  portash gateway-status [--dir DIR] [--json]
+          what is in a gateway's state folder: counts and checks, no secrets;
+          reads files only. Exit 0 = it could look (failed checks are data)
   portash authd [--socket PATH] [--totp-dir DIR] [--log-dir DIR]
           root daemon: TOTP checks, audit log, recordings
   portash totp enroll|rm USER [--totp-dir DIR]
           a user's TOTP secret for sudo and !totp rules (root)
-  portash totp enroll|import|rm TOKEN --unlock [--dir /var/lib/portash] [--if-missing] [--json]
+  portash totp enroll|import|rm TOKEN --unlock [--dir /var/lib/portash] [--if-missing] [--json] [--quiet]
           TOTP for the daily unlock; import reads an existing secret from
           stdin, so one phone entry unlocks every VM
   portash pam-totp
@@ -128,6 +131,8 @@ func main() {
 		err = cmdToken(args)
 	case "invite":
 		err = cmdInvite(args)
+	case "gateway-status":
+		err = cmdGatewayStatus(args)
 	case "restrict":
 		err = cmdRestrict(args)
 	case "shell":

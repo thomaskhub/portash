@@ -63,6 +63,7 @@ func cmdTOTP(args []string) error {
 	issuer := fs.String("issuer", "", "name shown in the authenticator app (default: hostname)")
 	ifMissing := fs.Bool("if-missing", false, "import: do nothing when a secret for NAME already exists")
 	asJSON := fs.Bool("json", false, "import: print the result as JSON")
+	quiet := fs.Bool("quiet", false, "import: print nothing on success (errors are always shown)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -86,7 +87,7 @@ func cmdTOTP(args []string) error {
 				return err
 			}
 			if have {
-				return importResult(pos[1], "unchanged", *asJSON)
+				return importResult(pos[1], "unchanged", *asJSON, *quiet)
 			}
 		}
 		// The same secret on every VM means one authenticator entry, and
@@ -98,7 +99,7 @@ func cmdTOTP(args []string) error {
 		if err := st.Import(pos[1], line); err != nil {
 			return err
 		}
-		return importResult(pos[1], "created", *asJSON)
+		return importResult(pos[1], "created", *asJSON, *quiet)
 	}
 	if *issuer == "" {
 		h, _ := os.Hostname()
@@ -129,7 +130,7 @@ func cmdTOTP(args []string) error {
 
 // importResult reports what `totp import` did: as JSON for tools, as one line
 // on stderr for people. A secret never appears in either.
-func importResult(name, status string, asJSON bool) error {
+func importResult(name, status string, asJSON, quiet bool) error {
 	if asJSON {
 		b, err := json.Marshal(struct {
 			Name   string `json:"name"`
@@ -139,6 +140,9 @@ func importResult(name, status string, asJSON bool) error {
 			return err
 		}
 		fmt.Println(string(b))
+		return nil
+	}
+	if quiet {
 		return nil
 	}
 	if status == "unchanged" {

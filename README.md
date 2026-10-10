@@ -529,6 +529,41 @@ install -m 600 alice-laptop.tokens /var/lib/portash/tokens.d/alice-laptop    # o
 * Make the lines offline with `portash token new` (see above), keep them in
   your repository: they hold the hash of the token, never the token.
 
+### What is in a gateway's folder (`gateway-status`)
+
+```sh
+sudo portash gateway-status [--dir /var/lib/portash] [--json]
+```
+
+Reads the state folder and prints counts and checks: the version, the pin,
+how many tokens there are (from the `tokens` file and from `tokens.d`, how many
+of them have expired, how many `tokens.d` files or lines are ignored), open
+invites and laptops waiting for approval, enrolled unlock secrets, and
+pass/fail checks for the folder, `tokens`, `tokens.d`, the gateway key, the
+`tickets` file and the `unlock` folder (modes and ownership).
+
+* It only reads. It needs no running gateway, opens no network port and changes
+  nothing (it does not even remove expired invites). There is deliberately no
+  status page on the gateway itself: a status on the network is something a
+  scanner could find.
+* It never shows a token, a hash, a TOTP secret, a device key, a ticket or any
+  log content. The output is a fixed list of counts and facts, and the pin,
+  which is public. It cannot know the options the gateway was started with
+  (for example `--require-unlock`).
+* **Exit codes.** `0` means it could look at the folder, **even when a check
+  failed**: failed checks are data, in the output (`"ok": false`). `1` means it
+  could not look (no such folder). Commands that change something do not use a
+  special exit code for "changed": a script that runs with `set -e` must not
+  stop because something was changed. They report it in their output (for
+  example `portash totp import --json` prints `"status": "created"` or
+  `"unchanged"`), and `0` means done.
+* `--quiet` on `portash invite approve` and `portash totp import` prints
+  nothing when it worked. Errors are always shown.
+* The JSON field names are fixed: `version`, `dir`, `pin`, `tokens`,
+  `tokensExpired`, `dropinTokens`, `dropinRefused`, `openInvites`,
+  `pendingLaptops`, `unlockSecrets`, `checks` (each with `name`, `ok`,
+  `detail`).
+
 ### Roles
 
 Pick one per SSH key in `/etc/ssh/authorized_keys/USER` (or with `Match User` +
