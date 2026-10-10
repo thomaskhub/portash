@@ -48,12 +48,19 @@ Gateway (on each VM, or one host in front of a Vabbit VPN):
           [--require-unlock] [--ticket-ttl 12h]
   portash fingerprint [--dir DIR]
           print the key pin laptops need
+  portash keygen --name HOST [--dir DIR] [--days 365]
+          make this VM's gateway key ahead of time; prints the pin. Never
+          overwrites a key; one key per VM
   portash token add NAME --device pshd_... [--ttl 2160h] [--dir DIR]
           print a new psh_ token bound to that device (shown once)
   portash token new NAME --device pshd_... --out FILE [--ttl 2160h] [--json]
           make a token anywhere, with no state directory: the token goes to
           FILE (new, mode 0600), only the line with its hash is printed
           (for the VM's tokens file). The token is never printed
+  portash grant [NAME] --device pshd_... --token-file FILE --gateway URL --pin PIN
+          [--ssh-user U] [--host-key FILE] [--totp-file FILE] [--out FILE]
+          one string for the person, to use with "portash join": gateway, pin,
+          token and more. It holds the token, so it is a secret
   portash token ls|rm NAME [--dir DIR]
           ls also shows the tokens from <dir>/tokens.d/ (files a provisioning tool owns)
   portash invite NAME --gateway https://HOST [--ssh-user USER] [--ttl 1h] [--dir DIR]
@@ -82,9 +89,11 @@ Server (Linux; in authorized_keys or sshd ForceCommand; see README):
           TOTP check for sudo via pam_exec (see README)
 
 Laptop:
-  portash join FILE|CODE...
-          set this laptop up from an invite: device key, gateway, host key,
-          ssh config and the TOTP QR code; then the admin approves it
+  portash join FILE|CODE|GRANT... [--replace]
+          set this laptop up from an invite (device key, gateway, host key,
+          ssh config, TOTP QR code; then the admin approves it) or from a
+          grant (no network, no approval; needs the device key your admin
+          made the token for; --replace to swap an existing gateway)
   portash device
           print this laptop's device key (send it to the admin)
   portash login [NAME] [--gateway HOST:443|https://HOST] --pin sha256:...[,...] [--network CIDR]
@@ -116,6 +125,8 @@ func main() {
 		err = cmdGateway(ctx, args)
 	case "fingerprint":
 		err = cmdFingerprint(args)
+	case "keygen":
+		err = cmdKeygen(args)
 	case "token":
 		err = cmdToken(args)
 	case "invite":
@@ -136,6 +147,8 @@ func main() {
 		err = cmdDevice()
 	case "join":
 		err = cmdJoin(ctx, args)
+	case "grant":
+		err = cmdGrant(args)
 	case "login":
 		err = cmdLogin(args)
 	case "logout":
@@ -341,6 +354,29 @@ func cmdFingerprint(args []string) error {
 		return err
 	}
 	fmt.Println(pin.Of(leaf))
+	return nil
+}
+
+// cmdKeygen makes the gateway's TLS key ahead of time, so its pin is known
+// before the VM exists and stays the same when that VM is rebuilt. The key is
+// for ONE VM: a key shared by several gateways would let one hacked VM
+// impersonate all of them.
+func cmdKeygen(args []string) error {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "folder for gateway.key and gateway.crt (the gateway's --dir)")
+	name := fs.String("name", "", "the VM this key is for (host name); stored in the certificate")
+	days := fs.Int("days", 365, "how long the certificate is valid (1-3650)")
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return errors.New("--name is required: one key per VM (use the VM's host name)")
+	}
+	p, err := pin.Generate(*dir, *name, *days)
+	if err != nil {
+		return err
+	}
+	fmt.Println(p)
 	return nil
 }
 
