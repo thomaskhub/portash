@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"portash/internal/fsown"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -40,8 +41,21 @@ func Valid(p string) bool {
 	return err == nil && len(b) == 32
 }
 
+// ErrKeyExists is returned when a gateway key or certificate is already in the
+// folder. A key is never replaced by accident: every user's pin would change.
+var ErrKeyExists = errors.New("a gateway key or certificate already exists here; restore the missing file, or remove both by hand if you mean to replace the key")
+
+const (
+	defaultDays = 3650 // the key a gateway makes for itself on first start
+	maxDays     = 3650
+	maxNameLen  = 64
+)
+
+var nameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]+$`)
+
 // LoadOrCreate returns the gateway certificate in dir, generating a
-// self-signed P-256 key and certificate on first use.
+// self-signed P-256 key and certificate on first use. It never replaces a key
+// that is already there, even when the certificate next to it is missing.
 func LoadOrCreate(dir string) (tls.Certificate, error) {
 	certPath, keyPath := filepath.Join(dir, "gateway.crt"), filepath.Join(dir, "gateway.key")
 	if c, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
@@ -49,40 +63,101 @@ func LoadOrCreate(dir string) (tls.Certificate, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return tls.Certificate{}, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if _, err := Generate(dir, "", defaultDays); err != nil {
 		return tls.Certificate{}, err
+	}
+	return tls.LoadX509KeyPair(certPath, keyPath)
+}
+
+// Generate creates gateway.key (0600) and gateway.crt in dir and returns the
+// pin. name (optional) is stored in the certificate subject, so a key that was
+// copied to several VMs shows up. It fails with ErrKeyExists, changing
+// nothing, when either file is already there. Two parallel calls cannot both
+// succeed: the key is created exclusively.
+func Generate(dir, name string, days int) (string, error) {
+	if name != "" && (len(name) > maxNameLen || !nameRe.MatchString(name)) {
+		return "", fmt.Errorf("name %q: use letters, digits and . _ @ - (at most %d characters)", name, maxNameLen)
+	}
+	if days < 1 || days > maxDays {
+		return "", fmt.Errorf("days must be between 1 and %d", maxDays)
+	}
+	certPath, keyPath := filepath.Join(dir, "gateway.crt"), filepath.Join(dir, "gateway.key")
+	for _, p := range []string{certPath, keyPath} {
+		if _, err := os.Lstat(p); err == nil {
+			return "", ErrKeyExists
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, err
+		return "", err
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
-		return tls.Certificate{}, err
+		return "", err
+	}
+	cn := "portash gateway"
+	if name != "" {
+		cn += " " + name
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "portash gateway"},
+		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
+		NotAfter:     time.Now().AddDate(0, 0, days),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return tls.Certificate{}, err
+		return "", err
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return "", err
 	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
-		return tls.Certificate{}, err
+		return "", err
 	}
-	if err := fsown.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		return tls.Certificate{}, err
+	if err := createNew(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return "", err
 	}
-	if err := fsown.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
-		return tls.Certificate{}, err
+	if err := createNew(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		os.Remove(keyPath) // do not leave a key without its certificate
+		return "", err
 	}
-	return tls.LoadX509KeyPair(certPath, keyPath)
+	return Of(cert), nil
+}
+
+// createNew writes a file that must not exist yet (O_EXCL also refuses a
+// symlink at the path) and gives it the owner of its folder, like fsown does.
+func createNew(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if errors.Is(err, os.ErrExist) {
+		return ErrKeyExists
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return err
+	}
+	if err := fsown.LikeParent(path); err != nil {
+		os.Remove(path) // a file the gateway could not read is worse than none
+		return err
+	}
+	return nil
 }
 
 // Leaf returns the parsed leaf certificate.
