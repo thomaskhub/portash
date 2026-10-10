@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base32"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -757,4 +759,59 @@ func TestSilentConnectionsAreCounted(t *testing.T) {
 			t.Fatal("connections that never sent a request were not counted")
 		}
 	}
+}
+
+// A token that a provisioning tool put into tokens.d connects like any other,
+// and taking the file away cuts the open stream.
+func TestDropinTokenConnectsAndRemovalKillsTheStream(t *testing.T) {
+	e := setup(t)
+	pub, device, _ := ed25519.GenerateKey(rand.Reader)
+	tok, err := tokens.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256([]byte(tok))
+	dropDir := tokens.DropinDir(e.tokPath)
+	if err := os.Mkdir(dropDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dropDir, "ci")
+	line := fmt.Sprintf("ci %x device=%s\n", hash, tokens.FormatDevice(pub))
+	if err := os.WriteFile(file, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	o := e.opts()
+	o.Token, o.Device = tok, device
+	c, err := dial.Connect(context.Background(), o, e.echo)
+	if err != nil {
+		t.Fatalf("a token from tokens.d was refused: %v", err)
+	}
+	defer c.Close()
+	roundTripShort(t, c)
+
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	keepBusy(c)
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.Copy(io.Discard, c); err != nil {
+		t.Fatalf("stream not closed after the file was removed: %v", err)
+	}
+	if _, err := dial.Connect(context.Background(), o, e.echo); err == nil {
+		t.Fatal("a removed drop-in token still connects")
+	}
+}
+
+func roundTripShort(t *testing.T, c net.Conn) {
+	t.Helper()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(c, "ping"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("echo = %q, %v", buf, err)
+	}
+	c.SetDeadline(time.Time{})
 }

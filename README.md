@@ -458,6 +458,42 @@ portash token rm alice-laptop --dir /var/lib/portash
 New connections are refused at once and open sessions are cut within 5
 seconds. Also remove their key from `/etc/ssh/authorized_keys/alice`.
 
+### Tokens from files (`tokens.d`)
+
+Besides the `tokens` file, the gateway reads every file in the folder
+`tokens.d` next to it (`/var/lib/portash/tokens.d/`), in the same line format
+(`NAME SHA256 device=pshd_... expires=...`). A provisioning tool (Ansible and
+the like) owns those files: it writes them, a rebuilt VM gets its access back,
+and `portash token add` / `invite approve` keep using the `tokens` file.
+
+```sh
+mkdir -m 700 /var/lib/portash/tokens.d
+install -m 600 alice-laptop.tokens /var/lib/portash/tokens.d/alice-laptop    # one or more lines
+```
+
+* **Changes are live.** A new, edited or removed file counts on the next
+  connection check. Removing a file or a line takes the access away at once:
+  new connections are refused and open streams are closed within a few seconds.
+  Write files through a temporary file and a rename, so the gateway never
+  reads half a file.
+* **A broken file takes away only itself.** A file that does not parse, is a
+  symlink, can be read by group or others (use mode 0600), belongs to another
+  user than root or the user the gateway runs as, or is too big is ignored and
+  named once in the gateway's log, and the other files keep working. If the
+  gateway runs as its own user, `chown` the files to that user. If the folder
+  can be written by group or others, nothing in it counts.
+* **Nothing is shadowed.** The `tokens` file is read first, then the files in
+  name order. A name or a hash that is already taken is refused in the later
+  file (logged), so a drop-in can never take over an existing token.
+* **Same rules as the `tokens` file.** An entry's expiry applies, and a drop-in
+  token is bound to its device key like any other. A `tokens` file that is
+  itself broken still stops everybody, as before.
+* `portash token ls` shows where each token comes from and what was ignored;
+  `portash token rm NAME` refuses to touch a token from `tokens.d` and names
+  the file instead; `token add` will not reuse a name from `tokens.d`.
+* Make the lines offline with `portash token new` (see above), keep them in
+  your repository: they hold the hash of the token, never the token.
+
 ### Roles
 
 Pick one per SSH key in `/etc/ssh/authorized_keys/USER` (or with `Match User` +

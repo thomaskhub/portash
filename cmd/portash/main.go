@@ -58,6 +58,7 @@ Gateway (on each VM, or one host in front of a Vabbit VPN):
           FILE (new, mode 0600), only the line with its hash is printed
           (for the VM's tokens file). The token is never printed
   portash token ls|rm NAME [--dir DIR]
+          ls also shows the tokens from <dir>/tokens.d/ (files a provisioning tool owns)
   portash invite NAME --gateway https://HOST [--ssh-user USER] [--ttl 1h] [--dir DIR]
           print an invite for one laptop (works once), for "portash join"
   portash invite ls | approve NAME CODE | rm NAME
@@ -227,6 +228,7 @@ func cmdGateway(ctx context.Context, args []string) error {
 		return err
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	store.SetLog(logger.Printf)
 	gcfg := gateway.Config{Network: prefix, Ports: allowed, Tokens: store, MaxStreams: *maxStreams,
 		MaxConns: *maxConns, IdleTimeout: *idle, MaxSession: *maxSession, ResumeWindow: *resumeWindow, Log: logger,
 		InviteDir: filepath.Join(*dir, "invites")}
@@ -397,12 +399,12 @@ func cmdToken(args []string) error {
 		fmt.Println(tok)
 		return nil
 	case pos[0] == "ls" && len(pos) == 1:
-		entries, err := tokens.Load(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+		entries, refused, err := tokens.LoadAll(path)
+		if err != nil {
+			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tEXPIRES\tDEVICE")
+		fmt.Fprintln(w, "NAME\tEXPIRES\tDEVICE\tFROM")
 		now := time.Now()
 		for _, e := range entries {
 			exp := "never"
@@ -412,10 +414,17 @@ func cmdToken(args []string) error {
 					exp += " (expired)"
 				}
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", e.Name, exp, tokens.FormatDevice(e.Device))
+			from := "tokens"
+			if e.Source != "" {
+				from = e.Source
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, exp, tokens.FormatDevice(e.Device), from)
 		}
 		w.Flush()
-		return err
+		for _, r := range refused {
+			fmt.Fprintf(os.Stderr, "ignored: %s\n", r)
+		}
+		return nil
 	case pos[0] == "rm" && len(pos) == 2:
 		return tokens.Remove(path, pos[1])
 	}
