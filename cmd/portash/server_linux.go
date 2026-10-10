@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,6 +61,8 @@ func cmdTOTP(args []string) error {
 	unlock := fs.Bool("unlock", false, "manage the gateway's daily-unlock secret for a token NAME instead of a user's")
 	gwDir := fs.String("dir", "/var/lib/portash", "gateway state directory (with --unlock)")
 	issuer := fs.String("issuer", "", "name shown in the authenticator app (default: hostname)")
+	ifMissing := fs.Bool("if-missing", false, "import: do nothing when a secret for NAME already exists")
+	asJSON := fs.Bool("json", false, "import: print the result as JSON")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -75,6 +78,17 @@ func cmdTOTP(args []string) error {
 	case "rm":
 		return st.Remove(pos[1])
 	case "import":
+		// A secret that is there stays, whatever state it is in: the replay
+		// and lockout state next to it belong to it.
+		if *ifMissing {
+			have, err := st.Exists(pos[1])
+			if err != nil {
+				return err
+			}
+			if have {
+				return importResult(pos[1], "unchanged", *asJSON)
+			}
+		}
 		// The same secret on every VM means one authenticator entry, and
 		// one code from `portash unlock` opens them all.
 		if term(os.Stdin) {
@@ -84,8 +98,7 @@ func cmdTOTP(args []string) error {
 		if err := st.Import(pos[1], line); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Imported TOTP secret for %s\n", pos[1])
-		return nil
+		return importResult(pos[1], "created", *asJSON)
 	}
 	if *issuer == "" {
 		h, _ := os.Hostname()
@@ -111,6 +124,28 @@ func cmdTOTP(args []string) error {
 		fmt.Fprintf(os.Stderr, "To use the same entry on other VMs: echo 'URI' | sudo portash totp import %s --unlock\n", pos[1])
 	}
 	fmt.Println(uri)
+	return nil
+}
+
+// importResult reports what `totp import` did: as JSON for tools, as one line
+// on stderr for people. A secret never appears in either.
+func importResult(name, status string, asJSON bool) error {
+	if asJSON {
+		b, err := json.Marshal(struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		}{name, status})
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	if status == "unchanged" {
+		fmt.Fprintf(os.Stderr, "TOTP secret for %s is already there; left unchanged\n", name)
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Imported TOTP secret for %s\n", name)
 	return nil
 }
 

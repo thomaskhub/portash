@@ -421,6 +421,34 @@ echo 'command="portash shell" ssh-ed25519 AAAA... alice' >> /etc/ssh/authorized_
 Send Alice the token, the gateway pin and the TOTP link over a channel you
 trust. Tokens expire after `--ttl` (default 90 days).
 
+### Make the token ahead of time (provisioning)
+
+`portash token add` runs on the VM and shows the token once. To prepare access
+before the VM exists, or to restore it after a rebuild, make the token
+anywhere (no state directory, no root, no VM) and put only its hash on the VM:
+
+```sh
+# on your admin machine, with the person's device key from `portash device`
+portash token new alice-laptop --device pshd_... --ttl 2160h --out alice.token
+# prints one line: alice-laptop <sha256> device=pshd_... expires=...
+```
+
+* The token itself goes to `alice.token` (a new file, mode 0600; an existing
+  file or a symlink is refused, so nothing is ever overwritten). It is never
+  printed, and never part of `--json`, which holds `name`, `line` and `expires`.
+* Put the printed line into the VM's `tokens` file (or let your provisioning
+  tool do it). It holds the hash, not the token: it is safe to keep in a
+  repository or a template, and useless without the token and the device key.
+* Give the person the token over a channel you trust, once. It works only from
+  the laptop whose device key it was made for.
+* `--ttl 0` makes a token that never expires; it prints a warning. Prefer a
+  lifetime.
+* Unlock secrets: `portash totp import NAME --unlock --if-missing` imports a
+  secret only when none exists, so a provisioning run can repeat safely and
+  never resets a secret or its replay and lockout state. With `--json` it
+  prints `{"name","status"}` where status is `created` or `unchanged`; the
+  secret is never printed.
+
 ### Remove a person or a laptop
 
 ```sh

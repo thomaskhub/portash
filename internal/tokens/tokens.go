@@ -117,6 +117,37 @@ func Load(path string) ([]Entry, error) {
 	return Parse(b, path)
 }
 
+// FormatEntry is the tokens-file line of one entry (without the newline).
+// It holds the token's hash, never the token.
+func FormatEntry(e Entry) string {
+	line := fmt.Sprintf("%s %s device=%s", e.Name, hex.EncodeToString(e.Hash[:]), FormatDevice(e.Device))
+	if !e.Expires.IsZero() {
+		line += " expires=" + e.Expires.UTC().Format(time.RFC3339)
+	}
+	return line
+}
+
+// NewEntry makes a token for name, bound to device, valid for ttl (0 = never
+// expires), without touching any file. It returns the token and the entry (the
+// hash and the rules); only the entry belongs on a VM.
+func NewEntry(name string, device ed25519.PublicKey, ttl time.Duration) (string, Entry, error) {
+	if !ValidName(name) {
+		return "", Entry{}, errors.New("name must be 1-64 chars of letters, digits, . _ @ -")
+	}
+	if len(device) != ed25519.PublicKeySize {
+		return "", Entry{}, errors.New("a device key is required")
+	}
+	tok, err := New()
+	if err != nil {
+		return "", Entry{}, err
+	}
+	e := Entry{Name: name, Hash: sha256.Sum256([]byte(tok)), Device: device}
+	if ttl > 0 {
+		e.Expires = time.Now().Add(ttl).UTC().Truncate(time.Second)
+	}
+	return tok, e, nil
+}
+
 // Save writes the file atomically with mode 0600.
 func Save(path string, entries []Entry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -125,10 +156,7 @@ func Save(path string, entries []Entry) error {
 	var b strings.Builder
 	b.WriteString("# portash gateway tokens: name sha256(token) device=<key> [expires=<time>]\n")
 	for _, e := range entries {
-		fmt.Fprintf(&b, "%s %s device=%s", e.Name, hex.EncodeToString(e.Hash[:]), FormatDevice(e.Device))
-		if !e.Expires.IsZero() {
-			fmt.Fprintf(&b, " expires=%s", e.Expires.UTC().Format(time.RFC3339))
-		}
+		b.WriteString(FormatEntry(e))
 		b.WriteByte('\n')
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tokens-*")

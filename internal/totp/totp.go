@@ -148,6 +148,21 @@ func URI(secret, user, issuer string) string {
 }
 
 // Has reports whether user has a secret.
+// Exists reports whether a secret file for user is there, whatever its
+// mode or content: a file that Has cannot use is still not to be overwritten.
+func (s Store) Exists(user string) (bool, error) {
+	p, err := s.path(user, ".secret")
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Lstat(p); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return false, nil
+}
+
 func (s Store) Has(user string) bool {
 	_, err := s.secret(user)
 	return err == nil
